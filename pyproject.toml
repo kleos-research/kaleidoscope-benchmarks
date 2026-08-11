@@ -1,0 +1,32 @@
+[project]
+name = "kaleidoscope-benchmarks"
+version = "0.1.0"
+description = "Evaluation suite for Kaleidoscope, an offline filesystem-native agent memory runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "openai>=1.40",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+kbench-beam = "kbench.benchmarks.beam.run:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["kbench*"]
+
+[tool.setuptools.package-data]
+"kbench.benchmarks.beam" = ["prompts/*.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

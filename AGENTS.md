@@ -146,3 +146,50 @@ only name a memory that already exists, so writing turn 40 before turn 12 loses
 the revision silently.
 
 Conversations are fully independent and run concurrently.
+
+---
+
+## Batching — `remember.items`
+
+`remember` accepts an `items` array of up to **20** creates in one call, given
+instead of the top-level `content_md`/`semantic_delta`.
+
+**A batch is a cheaper way to deliver declared semantics, never a cheaper way to
+avoid declaring them.** Every item carries its own `content_md`, its own title
+and its own facts. There is no batch-level delta, nothing is inherited between
+items, and an item with no facts is refused — taking the whole batch with it,
+before anything reaches disk, rather than leaving half of it there.
+
+What it actually saves is the derived work. Kaleidoscope re-derives the graph
+and activates the lexical index **once per call**, so a per-memory write pays
+that per memory. Over 500 creates through the CLI:
+
+| | single | batched (20) |
+| --- | --- | --- |
+| calls | 500 | 25 |
+| seconds | 60.03 | 16.37 |
+| graph rebuilds | 500 | 25 |
+| index activations | 500 | 25 |
+| index mutations | 500 | 500 |
+
+The index still receives all 500 documents. Only the number of activations
+changes.
+
+### Order is load-bearing inside a batch
+
+Items apply **in sequence**, each against a projection the previous one updated
+— so a later item can consolidate against, or supersede, an earlier one in the
+same batch. This is why a batch is not the unordered fan-out that a `mem0`-style
+`add` pools, and why it cannot be reordered for throughput.
+
+### The one thing batching gives up
+
+A buffered item has **no `memory_id` yet**. So an extraction that supersedes a
+memory still sitting in the buffer has nothing to point at, and the harness
+flushes the buffer before writing it. It does not try to predict the id: keys
+are derived by the service, and a harness that guesses at identity writes edges
+to whichever memory happened to land at that index.
+
+`ingest.json` reports `remember_calls` beside `written`, so the amortisation a
+run actually achieved is a number in the output rather than an assumption. A
+conversation dense in revisions flushes often and shows a ratio near 1.

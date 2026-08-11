@@ -12,6 +12,28 @@ Parallelism has a hard asymmetry here:
 * **Chunks within a conversation do not.** A `supersedes` can only name a memory
   already written, so writing turn 40 before turn 12 loses the revision
   silently — it becomes a duplicate instead of a retirement.
+
+## Writes are batched, and that is not a relaxation of the above
+
+`remember` takes an `items` array of up to `BATCH_ITEMS` creates. Items still
+apply **in order**, each against a projection the previous one updated, and
+each still declares its own title and its own facts — there is no shared delta
+and nothing is inherited. What a batch amortises is the *derived* work:
+Kaleidoscope re-derives the graph and activates the lexical index once per
+call, so a per-chunk write pays that per chunk.
+
+Measured on the runtime's own counters, 500 creates through the CLI:
+
+| | single | batched |
+| --- | --- | --- |
+| calls | 500 | 25 |
+| seconds | 60.03 | 16.37 |
+| graph rebuilds | 500 | 25 |
+| index activations | 500 | 25 |
+| index mutations | 500 | 500 |
+
+The last row is the point: both hand the index the same 500 documents. Nothing
+is dropped to get the other rows down.
 """
 
 from __future__ import annotations
@@ -30,6 +52,11 @@ from .dataset import Conversation, pack, render
 from .extract import ExtractionCache, extract
 
 
+# The service's `MAX_REMEMBER_ITEMS`. Sending more is refused for the whole
+# batch, so this is a hard ceiling and not a tuning knob.
+BATCH_ITEMS = 20
+
+
 @dataclass
 class IngestReport:
     conversation_id: str
@@ -42,6 +69,10 @@ class IngestReport:
     # Numbers the extractor cited that resolve to nothing. Non-zero means it is
     # inventing references, which is the failure numbering was meant to remove.
     unresolved_references: int = 0
+    # Write calls actually issued. `written / batches` is the amortisation this
+    # phase bought, and it is reported rather than assumed: a conversation full
+    # of revisions flushes early and often, and that shows up here.
+    batches: int = 0
     seconds: float = 0.0
     errors: list[str] = field(default_factory=list)
 
@@ -75,6 +106,59 @@ def ingest_conversation(
     by_number: dict[int, str] = {}
     prior: list[dict] = []
 
+    # Items waiting to go out as one call, as (number, payload).
+    #
+    # A buffered item has no `memory_id` yet — the service derives it from the
+    # idempotency key the CLI assigns per item — so a later extraction that
+    # names a buffered predecessor cannot be given an id to point at. The buffer
+    # is flushed first in that case, below. Predicting the id here instead would
+    # mean reimplementing the service's key derivation in the harness, and a
+    # harness that guesses at identity is how a benchmark ends up writing edges
+    # to whatever memory happened to land at that index.
+    batch: list[tuple[int, dict]] = []
+
+    def flush() -> None:
+        if not batch:
+            return
+        payload = {
+            "mode": "create",
+            "items": [item for _, item in batch],
+            # One parent identity; the CLI derives each item's key from it, the
+            # item's position and the item's own payload. A resubmitted batch
+            # therefore lands on the memories the first submission wrote.
+            "idempotency_key": f"beam-{conversation.conversation_id}-batch-{batch[0][0]}",
+        }
+        report.batches += 1
+        try:
+            response = vault.call("remember", payload)
+        except KaleidoscopeError as exc:
+            report.failed += len(batch)
+            report.errors.append(f"batch at memory {batch[0][0]}: {exc}")
+            batch.clear()
+            return
+        results = response.get("results") or []
+        if len(results) != len(batch):
+            # Never align a short result list positionally against the items —
+            # that silently attributes one item's id to another.
+            report.failed += len(batch)
+            report.errors.append(
+                f"batch at memory {batch[0][0]}: {len(results)} results for "
+                f"{len(batch)} items"
+            )
+            batch.clear()
+            return
+        for (number, _), result in zip(batch, results):
+            if result.get("status") == "rejected":
+                report.failed += 1
+                report.errors.append(
+                    f"memory {number}: {result.get('reason') or 'rejected'}")
+                continue
+            report.written += 1
+            memory_id = result.get("memory_id")
+            if memory_id:
+                by_number[number] = memory_id
+        batch.clear()
+
     for index, chunk in enumerate(chunks):
         extraction = extract(
             chunk,
@@ -93,6 +177,15 @@ def ingest_conversation(
             # this exchange establishes nothing, which is a valid answer.
             report.skipped_not_durable += 1
             continue
+
+        # A reference into the buffer has no id to point at yet, so the buffer
+        # goes out first. This is the only thing batching gives up, and it gives
+        # it up rather than guessing.
+        referenced = set(extraction.contradicts_indices)
+        if extraction.supersedes_index is not None:
+            referenced.add(extraction.supersedes_index)
+        if referenced and any(number in referenced for number, _ in batch):
+            flush()
 
         delta = dict(extraction.delta)
         superseded = by_number.get(extraction.supersedes_index) if extraction.supersedes_index else None
@@ -114,24 +207,19 @@ def ingest_conversation(
             delta["contradicts"] = contradicts
             report.contradicts += 1
 
-        payload = {
-            "mode": "create",
+        number = len(prior) + 1
+        batch.append((number, {
             "content_md": f"# {extraction.title}\n\n{extraction.content_md}\n",
             "semantic_delta": delta,
+            # Per item, stable across a resubmission of the same chunk. The CLI
+            # replaces it with a key derived from the batch parent; supplying
+            # one here keeps a single-item batch identical to a single write.
             "idempotency_key": f"beam-{conversation.conversation_id}-{index}",
-        }
-        try:
-            response = vault.call("remember", payload)
-        except KaleidoscopeError as exc:
-            report.failed += 1
-            report.errors.append(f"chunk {index}: {exc}")
-            continue
-
-        report.written += 1
-        number = len(prior) + 1
-        memory_id = response.get("memory_id")
-        if memory_id:
-            by_number[number] = memory_id
+        }))
+        # The extractor is shown this the moment the memory is extracted, not
+        # when it is flushed. Numbering is assigned in write order either way,
+        # and a buffered predecessor forces a flush above, so the numbers it is
+        # offered always resolve.
         prior.append(
             {
                 "number": number,
@@ -139,12 +227,17 @@ def ingest_conversation(
                 "summary": extraction.content_md,
             }
         )
+        if len(batch) >= BATCH_ITEMS:
+            flush()
+
+    flush()
 
     report.seconds = time.time() - started
     if progress is not None:
         with progress:
             print(
-                f"  conv {report.conversation_id:>3}: {report.written} written, "
+                f"  conv {report.conversation_id:>3}: {report.written} written "
+                f"in {report.batches} call(s), "
                 f"{report.skipped_not_durable} not durable, {report.failed} failed, "
                 f"{report.supersedes} supersedes  ({report.seconds:.0f}s)",
                 flush=True,
@@ -205,6 +298,7 @@ def write_report(reports: list[IngestReport], spend: Spend, path: Path) -> None:
                     "failed": sum(r.failed for r in reports),
                     "supersedes": sum(r.supersedes for r in reports),
                     "contradicts": sum(r.contradicts for r in reports),
+                    "remember_calls": sum(r.batches for r in reports),
                 },
                 "spend_usd": round(spend.total, 4),
                 "spend_by_stage": {k: round(v, 4) for k, v in spend.by_stage.items()},

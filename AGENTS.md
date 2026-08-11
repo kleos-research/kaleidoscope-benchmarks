@@ -29,7 +29,45 @@ tool. The resulting list is inserted into the extraction prompt and its cache
 fingerprint. An extractor output outside that list is refused rather than
 silently mapped to a hand-picked fallback.
 
+## One exchange may establish more than one thing
+
+The contract is **per memory**, not per exchange. An exchange that settles two
+unrelated things should produce two memories, each complete in itself — its own
+title, its own content, its own facts. `remember.items` carries up to 20 of them
+in one call.
+
+This is not a style preference, and the reason is a property of the retriever:
+**facts are not independently retrievable.** The lexical document is built from
+title and content only, so one memory carrying five facts offers the search
+**one** handle, not five. Bundle two unrelated claims and a question about the
+second has to win on a title written about the first.
+
+> **User:** Sprint one now ends March 29th, not the 22nd. And put Priya on auth.
+>
+> Two memories — *"Sprint one end date"* and *"Auth work ownership"* — not one
+> memory about both.
+
+Measured on BEAM 100K, over the same 2,866 exchanges: an extractor asked for one
+memory each produced 3.45 facts per exchange across 1.0 memories; the same
+extractor allowed several produced 3.35 facts across 1.8 memories. **The same
+information, spread over 1.8× the retrievable units.** For reference, mem0's
+hosted extractor stores 4.59 memories per exchange on this corpus.
+
+What does **not** change is the window. One extraction still reads **one
+exchange** — `CHUNK_SIZE = 2`, mem0's own granularity and LIGHT's `pair_chunk`.
+Widening it is a different change and a bad one: an earlier version of this
+harness packed ~10 messages per call and the extractor merged, dropped and
+generalised, which was then misread as a property of the memory system rather
+than of the packing. Output arity is the knob. Input size is not.
+
+Whether the extra handles translate into a higher *score* is being measured; that
+they cost nothing extra in calls, and that facts alone cannot be matched, is
+already settled.
+
 ## Current write shape
+
+One object per memory. An exchange returns a list of them, and an exchange that
+establishes nothing returns an empty list.
 
 ```json
 {

@@ -27,10 +27,15 @@ produces no facts writes nothing, because `remember` requires at least one — s
 the flag was a *second* judgement about the same question, and a second
 judgement can only lose information.
 
-It lost a great deal. Measured on BEAM 100K, the gate discarded 322 of 1,094
-evidence-bearing exchanges, capping reachable evidence at 0.706 before retrieval
-ran at all. The prompt now asks for facts, and silence is expressed by returning
-none.
+Measured on BEAM 100K the gate itself was close to harmless — 83 of 2,866
+exchanges dropped, 12 of them evidence-bearing, a 1.6% false-negative rate, and
+never a question's sole evidence. So it goes for redundancy, not for damage.
+
+The damaging number is elsewhere and worth recording here because it shapes the
+prompt: only 69% of evidence messages are reachable in what gets written. The
+gate is 1.6 points of that. The rest is abstraction — stating the durable fact
+instead of copying verbatim discards the distinctive terms a later question
+matches on.
 
 ## 3. Prior memories are numbered, not named
 

@@ -83,17 +83,11 @@ facts writes nothing, because `remember` requires at least one — so the flag w
 a *second* judgement about the same question, and a second judgement can only
 lose information.
 
-Measured on BEAM 100K, the gate itself was close to harmless: it dropped 83 of
-2,866 exchanges, only 12 of which carried evidence — a 1.6% false-negative rate,
-and it never once dropped a question's sole evidence. So it is removed for being
-redundant rather than for being destructive.
-
-**The number worth knowing is a different one.** Only 69% of evidence messages
-are reachable in the written memories at all, and the gate accounts for 1.6
-points of that gap. The rest is abstraction: the instruction to state the
-durable fact rather than copy verbatim paraphrases away the distinctive terms a
-later question keys on. Rule 3 exists for that reason — put anything a question
-might match into the title or the content, not only into a fact.
+It is removed for being redundant, and that is the whole argument. How much a
+gate costs depends entirely on how the prompt is written, so no fixed figure
+belongs here — two extractions over the same corpus with different prompts
+dropped 745 exchanges and 83 respectively. Measure it on your own prompt with
+your own benchmark's metrics if you want a number.
 
 ---
 

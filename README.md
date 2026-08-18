@@ -99,6 +99,7 @@ judge defect. Use the BEAM score to compare against published work.
 | `KBENCH_EXTRACTOR_MODEL` | `gpt-4.1` | writes memory |
 | `KBENCH_READER_MODEL` | `gpt-4.1` | answers from retrieved context |
 | `KBENCH_JUDGE_MODEL` | `gpt-4.1` | scores against the rubric |
+| `KBENCH_COMPILE_LIMIT` | `100` | ceiling on memories per `compile` |
 | `KBENCH_CONVERSATION_WORKERS` | `4` | conversations in flight |
 | `KBENCH_QUESTION_WORKERS` | `4` | questions per conversation |
 | `KSCOPE_BINARY` | `kscope` | path to the binary |
@@ -106,6 +107,15 @@ judge defect. Use the BEAM score to compare against published work.
 **Keep the reader identical across arms you intend to compare.** A reader
 difference is indistinguishable from a memory difference in the final score, and
 it is the easiest way to publish a number that means nothing.
+
+**And keep the depth identical.** `KBENCH_COMPILE_LIMIT` is the same hazard one
+step along. The default was `5` while BEAM's published comparisons read their
+store at `top_50` and `top_200` — so a run asked Kaleidoscope for five memories,
+asked everything else for a hundred, and reported the scores in one table. The
+default is now `100`, inside the range published work reports rather than above
+it. `compile` returns a bounded exposure, not a top-k slice: the limit is a
+ceiling on what may be exposed, and it stops early when nothing further earns
+its place, so raising it does not mechanically enlarge the context.
 
 The judge is deliberately not tied to the reader. If it tracked the arm being
 graded, judge quality and arm quality would be confounded.

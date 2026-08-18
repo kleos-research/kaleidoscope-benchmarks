@@ -166,7 +166,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("phase", choices=["ingest", "answer", "judge", "report", "all"])
     parser.add_argument("--tier", default="100K", help="BEAM tier: 100K, 500K, 1M, 10M")
-    parser.add_argument("--limit", type=int, default=5, help="memories per compile")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=settings.retrieval.compile_limit,
+        help="ceiling on memories per compile; see config.Retrieval for why "
+        "the default is not 5",
+    )
     parser.add_argument("--chunk-size", type=int, default=2, help="messages per extraction")
     parser.add_argument(
         "--conversation-workers",

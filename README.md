@@ -76,6 +76,13 @@ python -m kbench.benchmarks.beam.run judge --judge-model gpt-4.1-mini
 Re-judging costs judge calls only. Extraction is cached by prompt hash, so
 editing the prompt re-pays for what changed and nothing else.
 
+## Results
+
+Measured numbers for 100K and 1M, per question and per ability, with the
+configuration that produced each row: [docs/beam](docs/beam). Read that
+README's first section before quoting anything from it — the comparison against
+published work is not controlled for the reader model.
+
 ## Two scores, never averaged
 
 | | |

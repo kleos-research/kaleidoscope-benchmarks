@@ -73,6 +73,32 @@ class Concurrency:
 
     conversations: int = int(os.environ.get("KBENCH_CONVERSATION_WORKERS", "4"))
     questions: int = int(os.environ.get("KBENCH_QUESTION_WORKERS", "4"))
+
+
+@dataclass(frozen=True)
+class Retrieval:
+    """How deep each question reads.
+
+    **This is the number a published comparison turns on, so it is declared
+    here rather than left as a default in three signatures.**
+
+    `compile` returns a bounded exposure, not a top-k slice: it selects within
+    the limit and stops early when nothing further earns its place. The limit is
+    a ceiling on what may be exposed, not a quota to fill.
+
+    The default was 5. BEAM's published comparisons read their store at
+    `top_50` and `top_200`, so a run at 5 was asking Kaleidoscope for five
+    memories and everything else for a hundred, then reporting the scores side
+    by side. That is a depth handicap wearing the shape of a result, and it is
+    the same failure the README warns about for readers: a difference in how the
+    arms were asked is indistinguishable from a difference in what they know.
+
+    100 is chosen to sit inside the range published work reports rather than
+    above it. Raise it with `KBENCH_COMPILE_LIMIT` and say so beside any number
+    it produced.
+    """
+
+    compile_limit: int = int(os.environ.get("KBENCH_COMPILE_LIMIT", "100"))
     extraction: int = int(os.environ.get("KBENCH_EXTRACTION_WORKERS", "16"))
     judging: int = int(os.environ.get("KBENCH_JUDGE_WORKERS", "8"))
 
@@ -95,6 +121,7 @@ class Settings:
     base_url: str | None = os.environ.get("OPENAI_BASE_URL") or None
     models: Models = field(default_factory=Models)
     concurrency: Concurrency = field(default_factory=Concurrency)
+    retrieval: Retrieval = field(default_factory=Retrieval)
     data_dir: Path = Path(os.environ.get("KBENCH_DATA_DIR", str(DEFAULT_DATA_DIR)))
     results_dir: Path = Path(os.environ.get("KBENCH_RESULTS_DIR", str(DEFAULT_RESULTS_DIR)))
 

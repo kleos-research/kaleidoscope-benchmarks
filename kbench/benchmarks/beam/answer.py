@@ -66,7 +66,7 @@ def answer_question(
     *,
     vaults: VaultPool,
     spend: Spend,
-    limit: int = 5,
+    limit: int = settings.retrieval.compile_limit,
 ) -> Answer:
     record = Answer(
         conversation_id=conversation.conversation_id,
@@ -128,7 +128,7 @@ def run(
     vault_root: Path,
     out_path: Path,
     created_at: str = "2026-01-01T00:00:00Z",
-    limit: int = 5,
+    limit: int = settings.retrieval.compile_limit,
     conversation_workers: int | None = None,
     question_workers: int | None = None,
 ) -> tuple[list[Answer], Spend]:

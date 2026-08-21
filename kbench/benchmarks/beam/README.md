@@ -45,11 +45,11 @@ checks this at load and refuses to continue if the assumption breaks.
 ## Running
 
 ```bash
-python -m kbench.benchmarks.beam.run all --tier 100K
+python -m kbench.benchmarks.beam.run all --tier 100K <candidate-and-contract-flags>
 
 # or a phase at a time
-python -m kbench.benchmarks.beam.run ingest --tier 100K
-python -m kbench.benchmarks.beam.run answer --tier 100K --limit 5
+python -m kbench.benchmarks.beam.run ingest --tier 100K <candidate-and-contract-flags>
+python -m kbench.benchmarks.beam.run answer --tier 100K --top-k 5 <candidate-and-contract-flags>
 python -m kbench.benchmarks.beam.run judge  --tier 100K
 python -m kbench.benchmarks.beam.run report --tier 100K
 ```

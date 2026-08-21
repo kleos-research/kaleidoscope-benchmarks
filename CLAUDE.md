@@ -6,7 +6,7 @@ is not duplicated here — one copy, so the two cannot drift.
 
 ## What this repository is
 
-An evaluation harness for [Kaleidoscope](https://github.com/kleos-research/kaleidoscope).
+An evaluation harness for [Kaleidoscope](https://memory.kleosresearch.xyz/).
 It measures the memory system; it is not the memory system. `kscope` is assumed
 installed and every call shells out to it, so what gets measured is the shipped
 binary rather than a reimplementation.
@@ -48,8 +48,9 @@ than no run. If a phase is skipped, say which and why.
 ## Parallelism
 
 Conversations are independent stores and run concurrently. Questions within a
-conversation are independent reads and run concurrently. **Chunks within a
-conversation do not** — a `supersedes` can only name a memory already written.
+conversation issue independent ranked searches and run concurrently; the
+native vault owns exposure-write locking. **Chunks within a conversation do
+not** — later facts and contradictions can depend on earlier writes.
 
 If you add a nested pool, size the inner one for the *product*. A conversation
 worker submits its questions and then blocks on the results; with an inner pool

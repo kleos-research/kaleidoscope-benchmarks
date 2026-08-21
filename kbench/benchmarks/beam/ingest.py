@@ -9,13 +9,12 @@ asked at position 20 — the answer does not exist yet.
 Parallelism has a hard asymmetry here:
 
 * **Conversations run concurrently.** Separate vaults, no shared state.
-* **Chunks within a conversation do not.** A `supersedes` can only name a memory
-  already written, so writing turn 40 before turn 12 loses the revision
-  silently — it becomes a duplicate instead of a retirement.
+* **Chunks within a conversation do not.** Later facts and contradictions can
+  refer to earlier writes, so write order is semantic rather than cosmetic.
 
 ## Writes are batched, and that is not a relaxation of the above
 
-`remember` takes an `items` array of up to `BATCH_ITEMS` creates. Items still
+`remember` takes an `items` array up to the bound in the pinned public contract. Items still
 apply **in order**, each against a projection the previous one updated, and
 each still declares its own title and its own facts — there is no shared delta
 and nothing is inherited. What a batch amortises is the *derived* work:
@@ -46,15 +45,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...config import settings
-from ...kaleidoscope import KaleidoscopeError, VaultPool
+from ...kaleidoscope import KaleidoscopeError, ReleaseCandidate, VaultPool
 from ...llm import Spend
-from .dataset import Conversation, pack, render
+from .dataset import Conversation, pack
 from .extract import ExtractionCache, extract
-
-
-# The service's `MAX_REMEMBER_ITEMS`. Sending more is refused for the whole
-# batch, so this is a hard ceiling and not a tuning knob.
-BATCH_ITEMS = 20
 
 
 @dataclass
@@ -64,7 +58,6 @@ class IngestReport:
     written: int = 0
     skipped_not_durable: int = 0
     failed: int = 0
-    supersedes: int = 0
     contradicts: int = 0
     # Numbers the extractor cited that resolve to nothing. Non-zero means it is
     # inventing references, which is the failure numbering was meant to remove.
@@ -86,12 +79,14 @@ def ingest_conversation(
     vaults: VaultPool,
     cache: ExtractionCache,
     spend: Spend,
+    batch_items: int,
     chunk_size: int = 2,
     progress: threading.Lock | None = None,
 ) -> IngestReport:
     """Walk one conversation front to back, writing as it goes."""
     report = IngestReport(conversation_id=conversation.conversation_id)
     vault = vaults.for_conversation(conversation.conversation_id)
+    memory_types = vault.memory_types()
     chunks = pack(conversation.sessions, chunk_size=chunk_size)
     report.chunks = len(chunks)
     started = time.time()
@@ -109,7 +104,7 @@ def ingest_conversation(
     # Items waiting to go out as one call, as (number, payload).
     #
     # A buffered item has no `memory_id` yet — the service derives it from the
-    # idempotency key the CLI assigns per item — so a later extraction that
+    # retry identity the CLI derives per item — so a later extraction that
     # names a buffered predecessor cannot be given an id to point at. The buffer
     # is flushed first in that case, below. Predicting the id here instead would
     # mean reimplementing the service's key derivation in the harness, and a
@@ -123,10 +118,6 @@ def ingest_conversation(
         payload = {
             "mode": "create",
             "items": [item for _, item in batch],
-            # One parent identity; the CLI derives each item's key from it, the
-            # item's position and the item's own payload. A resubmitted batch
-            # therefore lands on the memories the first submission wrote.
-            "idempotency_key": f"beam-{conversation.conversation_id}-batch-{batch[0][0]}",
         }
         report.batches += 1
         try:
@@ -142,16 +133,14 @@ def ingest_conversation(
             # that silently attributes one item's id to another.
             report.failed += len(batch)
             report.errors.append(
-                f"batch at memory {batch[0][0]}: {len(results)} results for "
-                f"{len(batch)} items"
+                f"batch at memory {batch[0][0]}: {len(results)} results for {len(batch)} items"
             )
             batch.clear()
             return
         for (number, _), result in zip(batch, results):
-            if result.get("status") == "rejected":
+            if result.get("status") in {"rejected", "refused"}:
                 report.failed += 1
-                report.errors.append(
-                    f"memory {number}: {result.get('reason') or 'rejected'}")
+                report.errors.append(f"memory {number}: {result.get('reason') or 'rejected'}")
                 continue
             report.written += 1
             memory_id = result.get("memory_id")
@@ -166,6 +155,7 @@ def ingest_conversation(
             index=index,
             prior=prior,
             cache=cache,
+            memory_types=memory_types,
             spend=spend,
         )
         if extraction.error:
@@ -182,23 +172,12 @@ def ingest_conversation(
         # goes out first. This is the only thing batching gives up, and it gives
         # it up rather than guessing.
         referenced = set(extraction.contradicts_indices)
-        if extraction.supersedes_index is not None:
-            referenced.add(extraction.supersedes_index)
         if referenced and any(number in referenced for number, _ in batch):
             flush()
 
         delta = dict(extraction.delta)
-        superseded = by_number.get(extraction.supersedes_index) if extraction.supersedes_index else None
-        if superseded:
-            delta["supersedes"] = superseded
-            report.supersedes += 1
-        else:
-            if extraction.supersedes_index is not None:
-                report.unresolved_references += 1
         contradicts = [
-            by_number[number]
-            for number in extraction.contradicts_indices
-            if number in by_number and by_number[number] != superseded
+            by_number[number] for number in extraction.contradicts_indices if number in by_number
         ]
         report.unresolved_references += sum(
             1 for number in extraction.contradicts_indices if number not in by_number
@@ -208,14 +187,15 @@ def ingest_conversation(
             report.contradicts += 1
 
         number = len(prior) + 1
-        batch.append((number, {
-            "content_md": f"# {extraction.title}\n\n{extraction.content_md}\n",
-            "semantic_delta": delta,
-            # Per item, stable across a resubmission of the same chunk. The CLI
-            # replaces it with a key derived from the batch parent; supplying
-            # one here keeps a single-item batch identical to a single write.
-            "idempotency_key": f"beam-{conversation.conversation_id}-{index}",
-        }))
+        batch.append(
+            (
+                number,
+                {
+                    "content_md": f"# {extraction.title}\n\n{extraction.content_md}\n",
+                    "semantic_delta": delta,
+                },
+            )
+        )
         # The extractor is shown this the moment the memory is extracted, not
         # when it is flushed. Numbering is assigned in write order either way,
         # and a buffered predecessor forces a flush above, so the numbers it is
@@ -227,7 +207,7 @@ def ingest_conversation(
                 "summary": extraction.content_md,
             }
         )
-        if len(batch) >= BATCH_ITEMS:
+        if len(batch) >= batch_items:
             flush()
 
     flush()
@@ -239,7 +219,7 @@ def ingest_conversation(
                 f"  conv {report.conversation_id:>3}: {report.written} written "
                 f"in {report.batches} call(s), "
                 f"{report.skipped_not_durable} not durable, {report.failed} failed, "
-                f"{report.supersedes} supersedes  ({report.seconds:.0f}s)",
+                f"{report.contradicts} contradictions  ({report.seconds:.0f}s)",
                 flush=True,
             )
     return report
@@ -250,13 +230,21 @@ def run(
     *,
     vault_root: Path,
     cache_root: Path,
+    candidate: ReleaseCandidate,
+    profile_prefix: str,
     created_at: str = "2026-01-01T00:00:00Z",
     chunk_size: int = 2,
     workers: int | None = None,
 ) -> tuple[list[IngestReport], Spend]:
     """Phase 1 over every conversation, concurrently."""
     workers = workers or settings.concurrency.conversations
-    vaults = VaultPool(vault_root, created_at)
+    vaults = VaultPool(
+        vault_root,
+        created_at,
+        candidate=candidate,
+        profile_prefix=profile_prefix,
+    )
+    batch_items = int(candidate.public_contract["limits"]["remember_batch_items"])
     cache = ExtractionCache(cache_root)
     spend = Spend()
     progress = threading.Lock()
@@ -271,6 +259,7 @@ def run(
                 vaults=vaults,
                 cache=cache,
                 spend=spend,
+                batch_items=batch_items,
                 chunk_size=chunk_size,
                 progress=progress,
             ): conversation
@@ -283,12 +272,20 @@ def run(
     return reports, spend
 
 
-def write_report(reports: list[IngestReport], spend: Spend, path: Path) -> None:
+def write_report(
+    reports: list[IngestReport],
+    spend: Spend,
+    path: Path,
+    *,
+    candidate: ReleaseCandidate,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
                 "phase": "ingest",
+                "candidate": candidate.evidence,
+                "release_evidence_claimed": False,
                 "extractor": settings.models.extractor,
                 "conversations": [r.as_dict() for r in reports],
                 "totals": {
@@ -296,7 +293,6 @@ def write_report(reports: list[IngestReport], spend: Spend, path: Path) -> None:
                     "written": sum(r.written for r in reports),
                     "skipped_not_durable": sum(r.skipped_not_durable for r in reports),
                     "failed": sum(r.failed for r in reports),
-                    "supersedes": sum(r.supersedes for r in reports),
                     "contradicts": sum(r.contradicts for r in reports),
                     "remember_calls": sum(r.batches for r in reports),
                 },

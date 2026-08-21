@@ -10,24 +10,14 @@ from kbench.benchmarks.beam import extract
 from kbench.benchmarks.beam.dataset import EVIDENCE_FIELDS, _collect_ids
 from kbench.benchmarks.beam.metrics import ConversationEvidence
 
+MEMORY_TYPES = ("runtime_type_a", "runtime_type_b")
 
-def test_memory_types_match_the_documented_vocabulary():
-    """The service refuses an unaccepted type AFTER charging for the call.
 
-    So the list offered to the extractor and the list the service accepts must
-    be identical. This test is the reminder to update both.
-    """
-    assert extract.MEMORY_TYPES == (
-        "architecture",
-        "constraint",
-        "correction",
-        "decision",
-        "note",
-        "outcome",
-        "preference",
-        "procedure",
+def test_memory_types_are_runtime_input_not_a_source_constant():
+    assert not hasattr(extract, "MEMORY_TYPES")
+    assert extract.prompt_fingerprint(MEMORY_TYPES) != extract.prompt_fingerprint(
+        ("runtime_type_b",)
     )
-    assert extract.FALLBACK_TYPE in extract.MEMORY_TYPES
 
 
 def test_the_extractor_is_never_asked_for_a_confidence():
@@ -42,7 +32,9 @@ def test_silence_is_expressed_as_no_facts_not_as_a_flag():
     evidence on BEAM 100K. It must not come back."""
     prompt = extract.prompt_template()
     assert "worth_remembering" not in prompt
-    result = extract._to_extraction({"facts": [], "title": "x", "content_md": "y"}, None)
+    result = extract._to_extraction(
+        {"facts": [], "title": "x", "content_md": "y"}, None, MEMORY_TYPES
+    )
     assert not result.writes
 
 
@@ -57,28 +49,53 @@ def test_prior_memories_are_referenced_by_number_not_title():
 def test_facts_carry_the_constant_confidence_the_service_requires():
     result = extract._to_extraction(
         {
-            "memory_type": "decision",
+            "memory_type": "runtime_type_a",
             "title": "T",
             "content_md": "C",
-            "facts": [{"subject": "a", "predicate": "does_b", "object": "c"}],
+            "facts": [{"subject": "a", "predicate": "does_b", "object": "c", "mode": "fact"}],
+            "entities": [
+                {"n": "a", "kind": "actor", "is": "test actor"},
+                {"n": "c", "kind": "target", "is": "test target"},
+            ],
         },
         "2024-01-01T00:00:00Z",
+        MEMORY_TYPES,
     )
     assert result.writes
     assert result.delta["facts"][0]["confidence"] == extract.EXTRACTED_FACT_CONFIDENCE
 
 
-def test_an_unaccepted_memory_type_falls_back_to_an_accepted_one():
+def test_a_memory_type_outside_runtime_ontology_refuses():
     result = extract._to_extraction(
         {
             "memory_type": "not_a_real_type",
             "title": "T",
             "content_md": "C",
             "facts": [{"subject": "a", "predicate": "does_b", "object": "c"}],
+            "entities": [
+                {"n": "a", "kind": "actor", "is": "test actor"},
+                {"n": "c", "kind": "target", "is": "test target"},
+            ],
         },
         None,
+        MEMORY_TYPES,
     )
-    assert result.delta["memory_type"] in extract.MEMORY_TYPES
+    assert result.error == "extraction produced a memory_type outside runtime ontology"
+
+
+def test_every_fact_endpoint_requires_a_glossed_entity_declaration():
+    result = extract._to_extraction(
+        {
+            "memory_type": "runtime_type_a",
+            "title": "T",
+            "content_md": "C",
+            "facts": [{"subject": "a", "predicate": "does_b", "object": "c"}],
+            "entities": [{"n": "a", "kind": "actor", "is": "test actor"}],
+        },
+        None,
+        MEMORY_TYPES,
+    )
+    assert result.error == "every fact endpoint must be declared once as an entity"
 
 
 def test_nested_evidence_ids_are_collected_at_any_depth():
@@ -99,7 +116,7 @@ def test_booleans_are_not_collected_as_message_ids():
 
 def test_evidence_index_holds_only_its_own_conversation():
     """Message ids are per-conversation. A global index inflates recall."""
-    render = lambda m: m["content"]  # noqa: E731
+    render = lambda m: m["content"]
     index = ConversationEvidence(
         [{"id": 14, "content": "quokka telemetry threshold is 42"}], render
     )
@@ -108,7 +125,7 @@ def test_evidence_index_holds_only_its_own_conversation():
 
 
 def test_unlabelled_questions_are_excluded_rather_than_scored_zero():
-    render = lambda m: m["content"]  # noqa: E731
+    render = lambda m: m["content"]
     index = ConversationEvidence([{"id": 1, "content": "anything"}], render)
     assert index.recall([], "some context") is None
 

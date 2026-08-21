@@ -46,6 +46,27 @@ python -m kbench.benchmarks.beam.run all --tier 100K \
 
 Any OpenAI-compatible endpoint works — set `OPENAI_BASE_URL`.
 
+### Native candidate smoke
+
+The ordinary suite uses a fake process so it stays deterministic and free. An
+opt-in smoke test proves the same candidate/contract binding against a real
+native executable, then creates a temporary profile and vault, writes one
+memory, performs ranked and addressed search, and checks the closed launch
+descriptor:
+
+```bash
+export KBENCH_LIVE_CANDIDATE=/absolute/path/to/kscope
+export KBENCH_LIVE_CANDIDATE_SHA256=<64-lowercase-hex>
+export KBENCH_LIVE_PUBLIC_CONTRACT=/absolute/path/to/kaleidoscope-public-contract.json
+export KBENCH_LIVE_PUBLIC_CONTRACT_SHA256=<64-lowercase-hex>
+python -m pytest tests/test_live_candidate_smoke.py -q
+```
+
+The test isolates platform profile directories under its temporary root and
+does not need an LLM key. It records no score and keeps
+`signature_verified: false`; passing it is functional candidate evidence, not
+a signed release or a completed BEAM run.
+
 ## How it works
 
 Four phases. Each writes its output to disk, and **nothing downstream reruns

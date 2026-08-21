@@ -1,195 +1,124 @@
 # The memory-writing contract
 
-What an agent — human-written or model-driven — supplies when writing into
-Kaleidoscope. This file is the source `kbench/benchmarks/beam/prompts/extraction.md`
-is written against, so changing it changes what gets written.
+This is the source contract for
+`kbench/benchmarks/beam/prompts/extraction.md`. Changing it changes what the
+benchmark writes.
 
-Tools that read repository instructions pick this file up automatically.
-`CLAUDE.md` points here rather than duplicating it.
+## The rule
 
----
+Kaleidoscope never infers what a memory means. The caller supplies the
+semantics. Every `remember` create carries Markdown beginning with `# ` and a
+`semantic_delta` with a title and at least one fact. An extraction with no
+facts writes nothing.
 
-## The one rule everything follows from
+The extractor states what one exchange establishes in a form a later question
+can match. It is never shown the benchmark questions.
 
-**Kaleidoscope never infers what a memory means. The caller supplies the
-semantics.**
+## Runtime-owned vocabulary
 
-`remember` requires a `semantic_delta` carrying a title and at least one fact on
-every create. There is no path that accepts prose and derives structure from it.
-The operation that used to do that was retired precisely because a memory
-written with no title, no facts and a placeholder type is retrievable but
-participates in nothing — no merge veto, no contradiction check, no graph edge.
+Do not transcribe accepted `memory_type` values into code, prompts, tests or
+documentation. Before extracting for a conversation, the controller reads:
 
-So the extractor's job is not "summarise this exchange". It is **"state what this
-exchange establishes, in a form a later reader can match against a question"**.
+```text
+kscope call --profile <profile> ontology
+```
 
----
+with `{"mode":"read"}` and takes the values from
+`declarable.memory_types`. `ontology` is an operator call, not a model-facing
+tool. The resulting list is inserted into the extraction prompt and its cache
+fingerprint. An extractor output outside that list is refused rather than
+silently mapped to a hand-picked fallback.
 
-## The shape
+## Current write shape
 
 ```json
 {
-  "memory_type": "decision",
-  "title": "Transactions table gains category and notes columns",
-  "content_md": "The user decided to add two columns to the transactions table: category and notes.",
-  "facts": [
-    {"subject": "transactions table", "predicate": "gains_column", "object": "category"},
-    {"subject": "transactions table", "predicate": "gains_column", "object": "notes"}
-  ],
-  "entities": ["transactions table"],
-  "supersedes": null,
-  "contradicts": []
+  "mode": "create",
+  "items": [
+    {
+      "content_md": "# Transactions table columns\n\nThe transactions table gains category and notes columns.\n",
+      "semantic_delta": {
+        "memory_type": "<one value returned by this profile's ontology>",
+        "title": "Transactions table columns",
+        "entities": [
+          {"n": "transactions table", "kind": "artifact", "is": "the table that stores transactions"},
+          {"n": "category", "kind": "concept", "is": "a transaction classification column"},
+          {"n": "notes", "kind": "concept", "is": "a free-text transaction annotation column"}
+        ],
+        "facts": [
+          {"subject": "transactions table", "predicate": "gains_column", "object": "category", "mode": "decision", "basis": "stated", "confidence": 1.0},
+          {"subject": "transactions table", "predicate": "gains_column", "object": "notes", "mode": "decision", "basis": "stated", "confidence": 1.0}
+        ],
+        "evidence": [
+          {"kind": "conversation_turn", "reference": "2026-03-15T00:00:00Z"}
+        ],
+        "occurred_at": {"t": "2026-03-15T00:00:00Z", "grain": "instant"}
+      }
+    }
+  ]
 }
 ```
 
-### `memory_type` — a closed vocabulary
+Every fact endpoint must be declared in `entities` with exact `n`, a `kind`,
+and a required identifying `is` gloss. A date is never an entity. Predicates
+are lowercase bounded identifiers. Anything a question may key on belongs in
+the title or Markdown too; facts are not independently lexical documents.
 
-`architecture`, `constraint`, `correction`, `decision`, `note`, `outcome`,
-`preference`, `procedure`.
+The model is not asked for numeric confidence. This harness supplies a constant
+for facts it accepts. If the exchange does not support a fact, do not write it.
 
-An unaccepted type is **refused at the service boundary**, and the refusal costs
-the extraction call that produced it. A workspace can extend the vocabulary
-through the ontology; nothing in this benchmark does. Keep this list and the
-service's `ACCEPTED_MEMORY_TYPES` in sync — the test suite checks that they match.
+## Corrections and disputes
 
-### `facts` — SPO triples, and no confidence
+`supersedes` is not an input field. Neither are `relations` or caller-authored
+retry keys. Current graph semantics derive replacement from facts. A correction
+may use `corrections` as `{handle, says}` objects, while an unresolved dispute
+uses `contradicts` with active memory IDs.
 
-At least one, capped at 32. `predicate` must be a lowercase bounded identifier
-(`ends_on`, `gains_column`) — spaces are refused.
+The extraction prompt sees a bounded, numbered list of prior memories and may
+return numbers under `contradicts`. The controller resolves only numbers it
+actually supplied; invented references increment `unresolved_references` and
+are never guessed by title.
 
-**The model is not asked for a confidence.** The service's schema carries one and
-it feeds an admission term, so the harness sends a constant. But a language
-model has no calibrated distinction between 0.49 and 0.5; asking for one returns
-a number that looks precise, is noise, and then flows into an admission
-decision. If you are unsure what the exchange states, do not write the fact.
-The field exists for callers with a real calibrated source — a classifier, a
-vote, a measurement — and an extractor is not one.
+## Ordering and batching
 
-Note that facts are **not independently retrievable**: the lexical document is
-built from title and content only, so a term appearing solely in a fact is not
-matchable. Put anything a question might key on into the title or the content
-too.
+Ingestion walks a conversation front to back. Conversations are independent
+and run concurrently; chunks inside one conversation do not, because later
+facts and disputes can depend on earlier writes.
 
-### `title` — the handle a revision will use
+`remember.items` accepts the batch limit published by the digest-bound public
+contract. Each item carries its own Markdown, title, entities and facts. Items
+apply in order. Per-item validation failures are reported at their indexes;
+fields outside the operation schema refuse the request before any item is
+read. Repair and resend only a refused item when the response proves the
+request itself was accepted.
 
-Name the specific thing. "Sprint one end date", not "Update". A vague title
-cannot be targeted, so a later correction writes a duplicate instead of
-replacing its predecessor.
+A buffered item has no memory ID. When a later extraction disputes it, flush
+the buffer first; never predict an ID. The adapter owns retry identity, so the
+benchmark sends no `idempotency_key`.
 
-### There is no `worth_remembering` flag
+## Read contract
 
-There used to be, and it was redundant with `facts: []`. An extraction with no
-facts writes nothing, because `remember` requires at least one — so the flag was
-a *second* judgement about the same question, and a second judgement can only
-lose information.
+The only agent read tool is `search`:
 
-It is removed for being redundant, and that is the whole argument. How much a
-gate costs depends entirely on how the prompt is written, so no fixed figure
-belongs here — two extractions over the same corpus with different prompts
-dropped 745 exchanges and 83 respectively. Measure it on your own prompt with
-your own benchmark's metrics if you want a number.
+- ranked: `query`, `top_k`, and `maximum_context_bytes`; the result carries
+  ranked memories under `selected_hits` and bounded model text in
+  `context_text`; and
+- addressed: `memory_id` only; the current memory is returned at top level.
 
----
+A BEAM question performs exactly one ranked acquisition search and gives the
+reader the engine-rendered `context_text`. It does not re-render hits or follow
+them with addressed reads. “Evidence recall” is the benchmark metric noun; it
+does not name a tool.
 
-## `supersedes` and `contradicts` — how an agent actually resolves them
+## Candidate and privacy boundary
 
-These are the two mechanisms for change over time, and the reason a memory
-system beats a transcript at all.
+Every engine phase requires an executable path, its expected SHA-256, a
+generated public-contract path and its expected SHA-256. The contract must bind
+that executable and publish exactly `remember` and `search`. Absent or
+mismatched inputs refuse before profile or vault work.
 
-- **`supersedes`** — this memory *replaces* an earlier one. A changed date, a
-  reversed decision, a corrected number. The predecessor is retired from
-  serving; its bytes remain.
-- **`contradicts`** — this memory *disputes* an earlier one without cleanly
-  replacing it. Both stay live and the conflict is recorded as an edge.
-
-**The agent resolves them from a numbered list.** Before each extraction it is
-shown the memories already written for this conversation:
-
-```
-PRIOR MEMORIES from this conversation, numbered:
-1. Sprint one end date — Sprint one ends on 2024-03-29.
-2. Transactions table gains category and notes columns — ...
-3. Deployment target — The service deploys to staging first.
-```
-
-and it returns `"supersedes": 1`, not a title.
-
-**Numbers, not titles, and that is deliberate.** Matching by exact title string
-is brittle in the obvious way: a near-miss is silently a no-op that writes a
-duplicate instead of a retirement, and nothing reports it. An integer either
-resolves or does not, and one that does not is counted as
-`unresolved_references` so a run can see the extractor inventing references.
-mem0's update prompt remaps existing memories to integers for the same reason.
-
-**The list is bounded, and that bound has a cliff.** `PRIOR_WINDOW` is 40 by
-recency. Measured on BEAM 100K, a window of 40 reaches about 80% of candidate
-revisions; 80 reaches about 93%. A revision pointing further back than the
-window simply cannot see its target. Selecting by *similarity* instead of
-recency removes the cliff — that is a known improvement, not yet the default.
-
----
-
-## What the extractor is shown, and what it is not
-
-Three things: **the exchange**, **the date it was said on**, and **the numbered
-prior memories**.
-
-It is **never** shown the benchmark's questions. That would leak the evaluation
-into the write path and make every score meaningless.
-
----
-
-## Ordering
-
-Ingestion walks a conversation front to back and **must**. A `supersedes` can
-only name a memory that already exists, so writing turn 40 before turn 12 loses
-the revision silently.
-
-Conversations are fully independent and run concurrently.
-
----
-
-## Batching — `remember.items`
-
-`remember` accepts an `items` array of up to **20** creates in one call, given
-instead of the top-level `content_md`/`semantic_delta`.
-
-**A batch is a cheaper way to deliver declared semantics, never a cheaper way to
-avoid declaring them.** Every item carries its own `content_md`, its own title
-and its own facts. There is no batch-level delta, nothing is inherited between
-items, and an item with no facts is refused — taking the whole batch with it,
-before anything reaches disk, rather than leaving half of it there.
-
-What it actually saves is the derived work. Kaleidoscope re-derives the graph
-and activates the lexical index **once per call**, so a per-memory write pays
-that per memory. Over 500 creates through the CLI:
-
-| | single | batched (20) |
-| --- | --- | --- |
-| calls | 500 | 25 |
-| seconds | 60.03 | 16.37 |
-| graph rebuilds | 500 | 25 |
-| index activations | 500 | 25 |
-| index mutations | 500 | 500 |
-
-The index still receives all 500 documents. Only the number of activations
-changes.
-
-### Order is load-bearing inside a batch
-
-Items apply **in sequence**, each against a projection the previous one updated
-— so a later item can consolidate against, or supersede, an earlier one in the
-same batch. This is why a batch is not the unordered fan-out that a `mem0`-style
-`add` pools, and why it cannot be reordered for throughput.
-
-### The one thing batching gives up
-
-A buffered item has **no `memory_id` yet**. So an extraction that supersedes a
-memory still sitting in the buffer has nothing to point at, and the harness
-flushes the buffer before writing it. It does not try to predict the id: keys
-are derived by the service, and a harness that guesses at identity writes edges
-to whichever memory happened to land at that index.
-
-`ingest.json` reports `remember_calls` beside `written`, so the amortisation a
-run actually achieved is a number in the output rather than an assumption. A
-conversation dense in revisions flushes often and shows a ratio near 1.
+Each conversation owns one deterministic native profile and one vault. Public
+configuration and result metadata contain no root, workspace, principal or
+journal coordinates. The benchmark records candidate and contract digests but
+does not claim signature verification or release evidence until a signed
+DX-06A candidate is supplied and independently verified.

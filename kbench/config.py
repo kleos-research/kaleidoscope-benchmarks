@@ -65,7 +65,8 @@ class Concurrency:
 
     Conversations are independent — each has its own vault and BEAM's evidence
     never crosses conversations — so they parallelise freely. Questions within a
-    conversation parallelise too, because retrieval is read-only.
+    conversation parallelise too. Ranked retrieval writes an exposure row, so
+    the native vault lock remains the concurrency authority.
 
     Total in-flight LLM work is `conversations * questions`. Raise both until
     the endpoint pushes back, then stop.
@@ -82,23 +83,14 @@ class Retrieval:
     **This is the number a published comparison turns on, so it is declared
     here rather than left as a default in three signatures.**
 
-    `compile` returns a bounded exposure, not a top-k slice: it selects within
-    the limit and stops early when nothing further earns its place. The limit is
-    a ceiling on what may be exposed, not a quota to fill.
-
-    The default was 5. BEAM's published comparisons read their store at
-    `top_50` and `top_200`, so a run at 5 was asking Kaleidoscope for five
-    memories and everything else for a hundred, then reporting the scores side
-    by side. That is a depth handicap wearing the shape of a result, and it is
-    the same failure the README warns about for readers: a difference in how the
-    arms were asked is indistinguishable from a difference in what they know.
-
-    100 is chosen to sit inside the range published work reports rather than
-    above it. Raise it with `KBENCH_COMPILE_LIMIT` and say so beside any number
-    it produced.
+    ``search.top_k`` is protocol-defining: runs are comparable only when it and
+    the context-byte budget match. Both are sent explicitly and written to the
+    result metadata. Eight is the current shipped default; historical depth
+    sweeps remain reproducible by setting ``KBENCH_TOP_K`` explicitly.
     """
 
-    compile_limit: int = int(os.environ.get("KBENCH_COMPILE_LIMIT", "100"))
+    top_k: int = int(os.environ.get("KBENCH_TOP_K", "8"))
+    maximum_context_bytes: int = int(os.environ.get("KBENCH_MAXIMUM_CONTEXT_BYTES", str(32 * 1024)))
     extraction: int = int(os.environ.get("KBENCH_EXTRACTION_WORKERS", "16"))
     judging: int = int(os.environ.get("KBENCH_JUDGE_WORKERS", "8"))
 

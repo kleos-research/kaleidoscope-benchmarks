@@ -1,192 +1,294 @@
-"""Thin wrapper around the `kscope` CLI.
+"""Digest-bound, profile-first access to the shipped ``kscope`` executable.
 
-Kaleidoscope is assumed installed and on `PATH` (or pointed at by
-`KSCOPE_BINARY`). Nothing here reimplements the runtime — every call shells out,
-so what the benchmark measures is the shipped binary rather than a copy of it.
+The benchmark is a controller around a release candidate, not another memory
+implementation. Every engine call is made through one executable whose bytes
+and generated public contract were pinned by the caller. A run refuses before
+vault work when either digest is absent or disagrees.
 
-One vault per conversation. That is not an optimisation; it is the isolation the
-benchmark depends on. A shared vault would let one conversation's questions
-retrieve another conversation's memories and quietly inflate every score.
+Conversation isolation is expressed with native version-1 profiles. The
+benchmark never persists or reports root/workspace/principal/journal tuples;
+after ``init-profile`` every operation is ``call --profile NAME``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_BINARY = os.environ.get("KSCOPE_BINARY", "kscope")
 CALL_TIMEOUT_SECONDS = 600
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+PUBLIC_TOOLS = ("remember", "search")
+
+CommandRunner = Callable[[Path, list[str], str | None], tuple[int, str, str]]
 
 
 class KaleidoscopeError(RuntimeError):
-    """A `kscope` invocation refused or failed."""
+    """A candidate, profile, or engine operation refused."""
 
 
-@dataclass(frozen=True)
-class Identity:
-    """What `kscope init` mints. Every `call` needs all four."""
-
-    root: Path
-    workspace_id: str
-    principal_id: str
-    journal: str
-
-    @classmethod
-    def from_json(cls, root: Path, payload: str) -> "Identity":
-        record = json.loads(payload)
-        return cls(
-            root=root,
-            workspace_id=record["workspace_id"],
-            principal_id=record["principal_id"],
-            journal=record["journal"],
-        )
+def sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
 
 
-def _run(args: list[str], stdin: str | None = None, trace: bool = False) -> tuple[int, str, str]:
-    env = dict(os.environ)
-    if trace:
-        # Turns on `counters::emit` and `trajectory::emit`, both of which write
-        # one JSON line to stderr on the way out.
-        env["KALEIDOSCOPE_TRACE_JSON"] = "1"
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _subprocess_runner(
+    executable: Path, args: list[str], stdin: str | None
+) -> tuple[int, str, str]:
     completed = subprocess.run(
-        [DEFAULT_BINARY, *args],
+        [str(executable), *args],
         input=stdin,
         capture_output=True,
         text=True,
-        env=env,
+        env=dict(os.environ),
         timeout=CALL_TIMEOUT_SECONDS,
+        check=False,
     )
     return completed.returncode, completed.stdout, completed.stderr
 
 
-def first_error_line(stdout: str, stderr: str) -> str:
-    """The message, not the trace.
-
-    With tracing on, the counters and trajectory emitters write JSON to stderr on
-    every exit including failures, so the actual error is one non-JSON line among
-    them. Slicing `stderr[:200]` shows the counters and hides the cause.
-    """
-    for line in stderr.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("{"):
-            return stripped
-    return (stdout or stderr).strip()[:300]
+def _json_object(text: str, label: str) -> dict:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise KaleidoscopeError(f"{label} did not return valid JSON") from exc
+    if not isinstance(value, dict):
+        raise KaleidoscopeError(f"{label} did not return a JSON object")
+    return value
 
 
-def trace_records(stderr: str) -> list[dict]:
-    """The JSON trace lines, which share stderr with human-readable warnings."""
-    records = []
-    for line in stderr.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("{"):
-            continue
-        try:
-            records.append(json.loads(stripped))
-        except json.JSONDecodeError:
-            continue
-    return records
+def _required_digest(value: str | None, label: str) -> str:
+    if not value or SHA256.fullmatch(value) is None:
+        raise KaleidoscopeError(f"{label} must be an explicit lowercase SHA-256 digest")
+    return value
 
 
-def model() -> dict:
-    """What encoder this build carries, if any.
+@dataclass(frozen=True)
+class ReleaseCandidate:
+    """One executable and the generated public contract for exactly its bytes."""
 
-    Worth calling before a run and worth failing on. A build without the bundled
-    model has no semantic channel at all, so retrieval is lexical only — it does
-    not error, it just quietly measures a different system.
-    """
-    code, out, err = _run(["model"])
-    if code != 0:
-        raise KaleidoscopeError(f"kscope model failed: {first_error_line(out, err)}")
-    return json.loads(out) if out.strip() else {}
+    executable: Path
+    executable_sha256: str
+    public_contract_sha256: str
+    public_contract: dict
+    stat_identity: tuple[int, int, int, int] = field(repr=False)
+    runner: CommandRunner = field(default=_subprocess_runner, repr=False, compare=False)
 
+    @classmethod
+    def load(
+        cls,
+        *,
+        executable: Path | str | None,
+        executable_sha256: str | None,
+        public_contract: Path | str | None,
+        public_contract_sha256: str | None,
+        runner: CommandRunner = _subprocess_runner,
+    ) -> ReleaseCandidate:
+        """Load and verify immutable inputs; no best-effort discovery is allowed."""
+        if executable is None:
+            raise KaleidoscopeError("candidate executable is required")
+        if public_contract is None:
+            raise KaleidoscopeError("generated public contract is required")
+        expected_executable = _required_digest(executable_sha256, "candidate digest")
+        expected_contract = _required_digest(public_contract_sha256, "public-contract digest")
 
-def require_bundled_model() -> dict:
-    """Refuse to benchmark a build whose semantic channel is switched off."""
-    report = model()
-    if report.get("status") != "bundled":
-        raise KaleidoscopeError(
-            "this kscope build carries no embedding model, so the semantic "
-            "retrieval channel is off and retrieval is lexical only. Install a "
-            "build with the bundled model, or set KSCOPE_BINARY to one. "
-            f"Reported: {report!r}"
+        executable_path = Path(executable).expanduser().resolve(strict=True)
+        contract_path = Path(public_contract).expanduser().resolve(strict=True)
+        if not executable_path.is_file():
+            raise KaleidoscopeError("candidate executable is not a regular file")
+        if not contract_path.is_file():
+            raise KaleidoscopeError("public contract is not a regular file")
+
+        observed_executable = sha256_file(executable_path)
+        if observed_executable != expected_executable:
+            raise KaleidoscopeError("candidate digest mismatch")
+        contract_bytes = contract_path.read_bytes()
+        if sha256_bytes(contract_bytes) != expected_contract:
+            raise KaleidoscopeError("public-contract digest mismatch")
+        contract = _json_object(contract_bytes.decode("utf-8"), "public contract")
+
+        if contract.get("schema_version") != "kaleidoscope.public-contract.v1":
+            raise KaleidoscopeError("unsupported public-contract schema")
+        if (contract.get("executable") or {}).get("sha256") != expected_executable:
+            raise KaleidoscopeError("public contract is bound to a different candidate")
+        tools = tuple(
+            tool.get("name")
+            for tool in ((contract.get("mcp") or {}).get("tools") or [])
+            if isinstance(tool, dict)
         )
-    return report
+        if tools != PUBLIC_TOOLS:
+            raise KaleidoscopeError("public contract does not expose exactly remember and search")
+
+        stat = executable_path.stat()
+        return cls(
+            executable=executable_path,
+            executable_sha256=expected_executable,
+            public_contract_sha256=expected_contract,
+            public_contract=contract,
+            stat_identity=(stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns),
+            runner=runner,
+        )
+
+    @property
+    def evidence(self) -> dict:
+        """Path-free identity safe to put in benchmark output."""
+        return {
+            "schema_version": self.public_contract["schema_version"],
+            "product_version": (self.public_contract.get("product") or {}).get("version"),
+            "target": (self.public_contract.get("target") or {}).get("triple"),
+            "executable_sha256": self.executable_sha256,
+            "public_contract_sha256": self.public_contract_sha256,
+            "mcp_tools": list(PUBLIC_TOOLS),
+            "signature_verified": False,
+        }
+
+    def invoke(self, args: list[str], payload: dict | None = None) -> dict:
+        """Execute only while the candidate still has the pinned digest."""
+        stat = self.executable.stat()
+        observed_identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        if observed_identity != self.stat_identity:
+            raise KaleidoscopeError("candidate changed after verification")
+        stdin = (
+            None if payload is None else json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        )
+        code, stdout, _stderr = self.runner(self.executable, args, stdin)
+        if code != 0:
+            # Candidate stderr can contain local paths. Public benchmark records
+            # receive only the first command category.
+            raise KaleidoscopeError(f"candidate refused {args[0]}")
+        return _json_object(stdout, args[0])
+
+    def require_bundled_model(self) -> dict:
+        report = self.invoke(["model"])
+        if report.get("status") != "bundled":
+            raise KaleidoscopeError("candidate has no bundled embedding model")
+        return report
 
 
 class Vault:
-    """One conversation's memory. Thread-safe; instances are cheap."""
+    """One profile-addressed conversation vault."""
 
-    def __init__(self, identity: Identity, trace: bool = False) -> None:
-        self.identity = identity
-        self.trace = trace
-
-    @classmethod
-    def open(cls, root: Path, created_at: str, trace: bool = False) -> "Vault":
-        """Open, initialising on first use.
-
-        The identity is persisted beside the vault because `init` mints it and
-        nothing else can reproduce it — inventing one earns "identity has invalid
-        length or encoding", which the trace lines on the same stream then hide.
-        """
-        root = Path(root)
-        identity_path = root.parent / f"{root.name}.identity.json"
-        if not identity_path.exists():
-            root.parent.mkdir(parents=True, exist_ok=True)
-            code, out, err = _run(["init", str(root), created_at, "process-local"])
-            if code != 0:
-                raise KaleidoscopeError(f"init failed: {first_error_line(out, err)}")
-            identity_path.write_text(out)
-        return cls(Identity.from_json(root, identity_path.read_text()), trace=trace)
+    def __init__(self, candidate: ReleaseCandidate, profile: str) -> None:
+        self.candidate = candidate
+        self.profile = profile
+        self._memory_types: tuple[str, ...] | None = None
+        self._vocabulary_lock = threading.Lock()
 
     def call(self, operation: str, payload: dict) -> dict:
-        """One operation. Raises on refusal rather than returning an error shape."""
-        code, out, err = self.raw_call(operation, payload)
-        if code != 0:
-            raise KaleidoscopeError(f"{operation} refused: {first_error_line(out, err)}")
-        return json.loads(out) if out.strip() else {}
+        return self.candidate.invoke(["call", "--profile", self.profile, operation], payload)
 
-    def raw_call(self, operation: str, payload: dict) -> tuple[int, str, str]:
-        """The unwrapped form, for callers that want the trace or the exit code."""
-        identity = self.identity
-        return _run(
-            [
-                "call",
-                str(identity.root),
-                identity.workspace_id,
-                identity.principal_id,
-                identity.journal,
-                operation,
-            ],
-            stdin=json.dumps(payload),
-            trace=self.trace,
+    def ranked_search(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        maximum_context_bytes: int,
+    ) -> dict:
+        if not query.strip() or top_k < 1 or maximum_context_bytes < 1:
+            raise KaleidoscopeError("ranked search requires query and positive bounds")
+        result = self.call(
+            "search",
+            {
+                "query": query,
+                "top_k": top_k,
+                "maximum_context_bytes": maximum_context_bytes,
+            },
         )
+        if not isinstance(result.get("selected_hits"), list):
+            raise KaleidoscopeError("ranked search returned no selected_hits collection")
+        return result
+
+    def addressed_search(self, memory_id: str) -> dict:
+        if not memory_id.startswith("mem_"):
+            raise KaleidoscopeError("addressed search requires a memory_id")
+        result = self.call("search", {"memory_id": memory_id})
+        if result.get("memory_id") != memory_id:
+            raise KaleidoscopeError("addressed search returned a different memory")
+        if "selected_hits" in result:
+            raise KaleidoscopeError("addressed search returned ranked shape")
+        return result
+
+    def memory_types(self) -> tuple[str, ...]:
+        """Read declarable types through the operator surface, never an agent tool."""
+        with self._vocabulary_lock:
+            if self._memory_types is None:
+                response = self.call("ontology", {"mode": "read"})
+                values = (response.get("declarable") or {}).get("memory_types")
+                if not isinstance(values, list) or not values:
+                    raise KaleidoscopeError("ontology returned no declarable memory types")
+                cleaned = tuple(value for value in values if isinstance(value, str) and value)
+                if len(cleaned) != len(values) or len(set(cleaned)) != len(cleaned):
+                    raise KaleidoscopeError("ontology returned invalid declarable memory types")
+                self._memory_types = cleaned
+            return self._memory_types
 
 
 class VaultPool:
-    """One vault per conversation, opened once, shared across threads.
+    """Create or reopen exactly one native profile per conversation."""
 
-    The lock is load-bearing under `--conversation-workers > 1`: a plain
-    check-then-insert would let two threads `open` the same root and hold two
-    handles onto one vault. `compile` is a write, so that is two writers.
-    """
-
-    def __init__(self, root: Path, created_at: str, trace: bool = False) -> None:
-        self.root = Path(root)
+    def __init__(
+        self,
+        root: Path,
+        created_at: str,
+        *,
+        candidate: ReleaseCandidate,
+        profile_prefix: str,
+    ) -> None:
+        if PROFILE_NAME.fullmatch(profile_prefix) is None or len(profile_prefix) > 40:
+            raise KaleidoscopeError("profile prefix is not portable")
+        self.root = Path(root).expanduser().resolve()
         self.created_at = created_at
-        self.trace = trace
+        self.candidate = candidate
+        self.profile_prefix = profile_prefix
         self._vaults: dict[str, Vault] = {}
         self._lock = threading.Lock()
+
+    def _profile_name(self, conversation_id: str) -> str:
+        suffix = hashlib.sha256(conversation_id.encode("utf-8")).hexdigest()[:16]
+        return f"{self.profile_prefix}-{suffix}"
+
+    def _open(self, conversation_id: str) -> Vault:
+        profile = self._profile_name(conversation_id)
+        suffix = hashlib.sha256(conversation_id.encode("utf-8")).hexdigest()[:16]
+        root = (self.root / f"conv-{suffix}").resolve()
+        listing = self.candidate.invoke(["profile", "list"])
+        profiles = listing.get("profiles")
+        if not isinstance(profiles, list) or any(not isinstance(value, str) for value in profiles):
+            raise KaleidoscopeError("profile list returned invalid shape")
+        if profile in profiles:
+            record = self.candidate.invoke(["profile", "show", profile])
+            # The tuple remains inside this process. Only the non-secret profile
+            # name crosses later calls or enters a benchmark record.
+            if record.get("name") != profile or Path(record.get("root", "")).resolve() != root:
+                raise KaleidoscopeError("existing benchmark profile points at another vault")
+        else:
+            root.parent.mkdir(parents=True, exist_ok=True)
+            if root.exists():
+                self.candidate.invoke(
+                    ["profile", "import", profile, str(root), "process-local"]
+                )
+            else:
+                self.candidate.invoke(
+                    ["init-profile", profile, str(root), self.created_at, "process-local"]
+                )
+        return Vault(self.candidate, profile)
 
     def for_conversation(self, conversation_id: str) -> Vault:
         with self._lock:
             if conversation_id not in self._vaults:
-                self._vaults[conversation_id] = Vault.open(
-                    self.root / f"conv-{conversation_id}",
-                    self.created_at,
-                    trace=self.trace,
-                )
+                self._vaults[conversation_id] = self._open(conversation_id)
             return self._vaults[conversation_id]

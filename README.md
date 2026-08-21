@@ -1,6 +1,6 @@
 # Kaleidoscope Benchmarks
 
-Open-source evaluation suite for [Kaleidoscope](https://github.com/kleos-research/kaleidoscope),
+Open-source evaluation suite for [Kaleidoscope](https://memory.kleosresearch.xyz/),
 an offline, filesystem-native memory runtime for AI agents.
 
 The harness measures the memory system. It does not reimplement it — `kscope` is
@@ -17,12 +17,14 @@ gets measured is what ships.
 
 ## Quick start
 
-Kaleidoscope must be installed and `kscope` on your `PATH`. Verify the build
-carries an embedding model — without one the semantic retrieval channel is off
-and the harness will refuse to run:
+The engine candidate and its generated public contract must be present as
+immutable files. Record both SHA-256 digests; the harness refuses an absent or
+mismatched digest before it creates a profile or vault. It also verifies that
+the contract binds the same executable and exposes only `remember` and `search`.
 
 ```bash
-kscope model     # expects "status": "bundled"
+shasum -a 256 /path/to/kscope
+shasum -a 256 /path/to/kaleidoscope-public-contract.json
 ```
 
 Then:
@@ -35,7 +37,11 @@ pip install -e .
 cp .env.example .env      # add your OPENAI_API_KEY
 
 # Fetch the BEAM tier you want into data/ — see benchmarks/beam/README.md
-python -m kbench.benchmarks.beam.run all --tier 100K
+python -m kbench.benchmarks.beam.run all --tier 100K \
+  --candidate /path/to/kscope \
+  --candidate-sha256 <64-lowercase-hex> \
+  --public-contract /path/to/kaleidoscope-public-contract.json \
+  --public-contract-sha256 <64-lowercase-hex>
 ```
 
 Any OpenAI-compatible endpoint works — set `OPENAI_BASE_URL`.
@@ -57,9 +63,9 @@ ingest  ──►  answer  ──►  judge  ──►  report
 establishes, write it through `remember`. The extractor supplies the semantics;
 Kaleidoscope never infers them. See [AGENTS.md](AGENTS.md).
 
-**2. Answer** — for each question, `compile` returns the bounded context
-Kaleidoscope itself assembled, and the reader answers from exactly that. The
-harness does not re-render the hits: `compile`'s context carries graph paths,
+**2. Answer** — for each question, one ranked `search` returns the bounded
+context Kaleidoscope itself assembled, and the reader answers from exactly
+that. The harness does not re-render hits: `search.context_text` carries graph paths,
 contradiction flags and validity windows that re-rendering would discard.
 
 **3. Judge** — one call per rubric item, plus normalised Kendall tau for
@@ -106,23 +112,21 @@ judge defect. Use the BEAM score to compare against published work.
 | `KBENCH_EXTRACTOR_MODEL` | `gpt-4.1` | writes memory |
 | `KBENCH_READER_MODEL` | `gpt-4.1` | answers from retrieved context |
 | `KBENCH_JUDGE_MODEL` | `gpt-4.1` | scores against the rubric |
-| `KBENCH_COMPILE_LIMIT` | `100` | ceiling on memories per `compile` |
+| `KBENCH_TOP_K` | `8` | explicit ranked-search depth |
+| `KBENCH_MAXIMUM_CONTEXT_BYTES` | `32768` | explicit context budget |
 | `KBENCH_CONVERSATION_WORKERS` | `4` | conversations in flight |
 | `KBENCH_QUESTION_WORKERS` | `4` | questions per conversation |
-| `KSCOPE_BINARY` | `kscope` | path to the binary |
+| candidate CLI flags | — | executable/contract paths and exact SHA-256 digests |
 
 **Keep the reader identical across arms you intend to compare.** A reader
 difference is indistinguishable from a memory difference in the final score, and
 it is the easiest way to publish a number that means nothing.
 
-**And keep the depth identical.** `KBENCH_COMPILE_LIMIT` is the same hazard one
-step along. The default was `5` while BEAM's published comparisons read their
-store at `top_50` and `top_200` — so a run asked Kaleidoscope for five memories,
-asked everything else for a hundred, and reported the scores in one table. The
-default is now `100`, inside the range published work reports rather than above
-it. `compile` returns a bounded exposure, not a top-k slice: the limit is a
-ceiling on what may be exposed, and it stops early when nothing further earns
-its place, so raising it does not mechanically enlarge the context.
+**And keep the search contract identical.** `top_k` and
+`maximum_context_bytes` are protocol-defining inputs, not volume dials. The
+harness sends both explicitly and records them beside the candidate and public
+contract digests. Historical depth sweeps remain possible, but their rows are
+comparable only at the same values.
 
 The judge is deliberately not tied to the reader. If it tracked the arm being
 graded, judge quality and arm quality would be confounded.
@@ -134,8 +138,21 @@ crosses conversations — so they run concurrently, as do the questions within
 them. Total in-flight work is `conversation_workers x question_workers`.
 
 Ingestion is the exception: chunks within a conversation are **ordered**, because
-a `supersedes` can only name a memory already written. Writing turn 40 before
-turn 12 loses the revision silently.
+later facts and contradictions can depend on earlier writes. Writing turn 40
+before turn 12 changes the memory graph.
+
+Each conversation has one deterministic native profile and one vault. Restarting
+between ingest and answer reopens that same profile; public result metadata
+contains only profile-free candidate digests, never root/workspace/principal/
+journal coordinates. Local vault and extraction-cache directories are also
+keyed by the candidate or contract digest so a new candidate cannot silently
+reuse an earlier candidate's acquisition state. Answer and judge sidecars bind
+the exact answer/score bytes across phase restarts; report generation refuses
+stale or cross-candidate phase artifacts.
+
+This branch verifies digest binding but deliberately records
+`signature_verified: false` and `release_evidence_claimed: false`. A signed
+DX-06A candidate is still required before any run is release evidence.
 
 ## A note on benchmark scores
 

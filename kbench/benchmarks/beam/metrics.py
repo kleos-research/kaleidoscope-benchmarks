@@ -75,9 +75,7 @@ class ConversationEvidence:
         if text is None:
             return set()
         return {
-            term
-            for term in _tokens(text)
-            if self.document_frequency.get(term, 0) <= self.cutoff
+            term for term in _tokens(text) if self.document_frequency.get(term, 0) <= self.cutoff
         }
 
     def recall(self, evidence_ids: list[int], context: str, threshold: float = 0.5) -> float | None:
@@ -114,8 +112,10 @@ class RetrievalSummary:
 
     def render(self) -> str:
         lines = [
-            f"evidence recall over {self.questions_scored} labelled questions: "
-            f"{self.evidence_recall:.4f}",
+            (
+                f"evidence recall over {self.questions_scored} labelled questions: "
+                f"{self.evidence_recall:.4f}"
+            ),
             f"  ({self.unlabelled_excluded} unlabelled questions excluded, not scored zero)",
             "",
             f"{'ability':28}{'recall':>10}",
@@ -150,9 +150,7 @@ def summarise(answers: list[dict], evidence_by_conversation: dict) -> RetrievalS
     return RetrievalSummary(
         questions_scored=len(scored),
         evidence_recall=sum(scored) / len(scored) if scored else 0.0,
-        by_ability={
-            ability: sum(values) / len(values) for ability, values in per_ability.items()
-        },
+        by_ability={ability: sum(values) / len(values) for ability, values in per_ability.items()},
         abstention_fired=abstained,
         unlabelled_excluded=unlabelled,
     )

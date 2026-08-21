@@ -1,18 +1,18 @@
-"""Phase 2 — retrieve and answer.
+"""Phase 2 — search once and answer.
 
-Two stages that share a loop because they share a per-question unit of work:
-`compile` returns the bounded context Kaleidoscope itself assembled, and the
-reader answers from exactly that.
+Two stages share one per-question unit of work: one ranked ``search`` returns
+the bounded context Kaleidoscope assembled, and the reader answers from exactly
+that. The acquisition path never follows a ranked hit with a second read.
 
-**The context comes from `compile`, not from re-rendering the hits.** That
+**The context comes from `search.context_text`, not from re-rendering hits.** That
 distinction matters: `render_bounded_context` emits graph paths
 (`Connected through: A -[supersedes]-> B`), contradiction flags, validity
 windows and the ontology capsule. A harness that takes `selected_hits` and
 formats them itself throws all of that away and measures a weaker system than
 the one under test.
 
-Both stages parallelise fully. Conversations are independent stores; questions
-within a conversation are independent reads.
+Both stages parallelise fully. Conversations are independent stores; ranked
+searches write exposures, whose concurrency is owned by the native vault.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ...config import settings
-from ...kaleidoscope import KaleidoscopeError, VaultPool
+from ...kaleidoscope import KaleidoscopeError, ReleaseCandidate, VaultPool, sha256_file
 from ...llm import Spend, complete
 from .dataset import Conversation, Question
 
@@ -55,8 +55,8 @@ class Answer:
 
 
 def reader_prompt(question: str, context: str) -> str:
-    return READER_PROMPT_PATH.read_text().replace("{context}", context).replace(
-        "{question}", question
+    return (
+        READER_PROMPT_PATH.read_text().replace("{context}", context).replace("{question}", question)
     )
 
 
@@ -66,7 +66,8 @@ def answer_question(
     *,
     vaults: VaultPool,
     spend: Spend,
-    limit: int = settings.retrieval.compile_limit,
+    top_k: int = settings.retrieval.top_k,
+    maximum_context_bytes: int = settings.retrieval.maximum_context_bytes,
 ) -> Answer:
     record = Answer(
         conversation_id=conversation.conversation_id,
@@ -79,15 +80,10 @@ def answer_question(
 
     started = time.time()
     try:
-        compiled = vault.call(
-            "compile",
-            {
-                "query": question.text,
-                "limit": limit,
-                # Stable per question so a re-run replays the same exposure
-                # rather than minting a new one.
-                "idempotency_key": f"beam-{conversation.conversation_id}-q{question.index}",
-            },
+        searched = vault.ranked_search(
+            question.text,
+            top_k=top_k,
+            maximum_context_bytes=maximum_context_bytes,
         )
     except KaleidoscopeError as exc:
         record.error = str(exc)
@@ -95,14 +91,14 @@ def answer_question(
         return record
     record.retrieval_ms = (time.time() - started) * 1000.0
 
-    # Kaleidoscope's own compiled context, verbatim.
-    record.context = compiled.get("context_text", "") or ""
+    # Kaleidoscope's own bounded context, verbatim.
+    record.context = searched.get("context_text", "") or ""
     record.context_chars = len(record.context)
-    hits = compiled.get("selected_hits") or []
+    hits = searched.get("selected_hits") or []
     record.retrieved_count = len(hits)
     record.retrieved_ids = [h.get("memory_id", "") for h in hits]
 
-    abstention = compiled.get("abstention") or {}
+    abstention = searched.get("abstention") or {}
     record.abstained = bool(abstention.get("abstained"))
     record.mean_channels = abstention.get("mean_channels")
 
@@ -128,7 +124,10 @@ def run(
     vault_root: Path,
     out_path: Path,
     created_at: str = "2026-01-01T00:00:00Z",
-    limit: int = settings.retrieval.compile_limit,
+    candidate: ReleaseCandidate,
+    profile_prefix: str,
+    top_k: int = settings.retrieval.top_k,
+    maximum_context_bytes: int = settings.retrieval.maximum_context_bytes,
     conversation_workers: int | None = None,
     question_workers: int | None = None,
 ) -> tuple[list[Answer], Spend]:
@@ -138,7 +137,12 @@ def run(
     question_workers = question_workers or concurrency.questions
     question_slots = max(1, conversation_workers * question_workers)
 
-    vaults = VaultPool(vault_root, created_at)
+    vaults = VaultPool(
+        vault_root,
+        created_at,
+        candidate=candidate,
+        profile_prefix=profile_prefix,
+    )
     spend = Spend()
     answers: list[Answer] = []
     write_lock = threading.Lock()
@@ -156,7 +160,12 @@ def run(
     def one_conversation(conversation: Conversation) -> None:
         for record in question_pool.map(
             lambda q: answer_question(
-                conversation, q, vaults=vaults, spend=spend, limit=limit
+                conversation,
+                q,
+                vaults=vaults,
+                spend=spend,
+                top_k=top_k,
+                maximum_context_bytes=maximum_context_bytes,
             ),
             conversation.questions,
         ):
@@ -172,9 +181,10 @@ def run(
         # submits its questions and then blocks on the results; with a pool
         # sized for one conversation, the waiters occupy every slot and starve
         # the work they are waiting for.
-        with ThreadPoolExecutor(max_workers=question_slots) as question_pool, ThreadPoolExecutor(
-            max_workers=conversation_workers
-        ) as conversation_pool:
+        with (
+            ThreadPoolExecutor(max_workers=question_slots) as question_pool,
+            ThreadPoolExecutor(max_workers=conversation_workers) as conversation_pool,
+        ):
             futures = [
                 conversation_pool.submit(one_conversation, conversation)
                 for conversation in conversations
@@ -184,6 +194,29 @@ def run(
     finally:
         handle.close()
 
-    answers.sort(key=lambda a: (int(a.conversation_id) if a.conversation_id.isdigit() else 0,
-                                a.question_index))
+    answers.sort(
+        key=lambda a: (
+            int(a.conversation_id) if a.conversation_id.isdigit() else 0,
+            a.question_index,
+        )
+    )
+    metadata_path = out_path.with_suffix(out_path.suffix + ".meta.json")
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "kbench.run-inputs.v1",
+                "candidate": candidate.evidence,
+                "search": {
+                    "top_k": top_k,
+                    "maximum_context_bytes": maximum_context_bytes,
+                    "calls_per_question": 1,
+                },
+                "answers_sha256": sha256_file(out_path),
+                "release_evidence_claimed": False,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     return answers, spend

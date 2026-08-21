@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 from ...config import settings
-from ...kaleidoscope import require_bundled_model
+from ...kaleidoscope import KaleidoscopeError, ReleaseCandidate, sha256_file
 from . import answer as answer_phase
 from . import ingest as ingest_phase
 from . import judge as judge_phase
@@ -44,7 +44,9 @@ def _paths(tier: str) -> dict[str, Path]:
         "cache": settings.data_dir / "extraction-cache" / tier,
         "ingest": out / "ingest.json",
         "answers": out / "answers.jsonl",
+        "answers_meta": out / "answers.jsonl.meta.json",
         "scores": out / "scores.jsonl",
+        "scores_meta": out / "scores.jsonl.meta.json",
         "report": out / "report.md",
     }
 
@@ -64,18 +66,50 @@ def _load(tier: str) -> list[Conversation]:
     return conversations
 
 
+def _candidate(args) -> ReleaseCandidate:
+    try:
+        return ReleaseCandidate.load(
+            executable=args.candidate,
+            executable_sha256=args.candidate_sha256,
+            public_contract=args.public_contract,
+            public_contract_sha256=args.public_contract_sha256,
+        )
+    except (KaleidoscopeError, FileNotFoundError) as exc:
+        raise SystemExit(f"release candidate refused: {exc}") from exc
+
+
+def _profile_prefix(args, candidate: ReleaseCandidate) -> str:
+    if args.profile_prefix:
+        return args.profile_prefix
+    tier = "".join(character.lower() for character in args.tier if character.isalnum())
+    return f"beam-{tier}-{candidate.executable_sha256[:8]}"
+
+
+def _require_matching_candidate(path: Path, candidate: ReleaseCandidate) -> None:
+    if not path.exists():
+        raise SystemExit(f"{path} not found — run the preceding candidate-bound phase first")
+    record = json.loads(path.read_text())
+    evidence = record.get("candidate") or {}
+    for key in ("executable_sha256", "public_contract_sha256"):
+        if evidence.get(key) != candidate.evidence[key]:
+            raise SystemExit(f"{path.name} is bound to a different {key}")
+
+
 def cmd_ingest(args) -> int:
-    require_bundled_model()
+    candidate = _candidate(args)
+    candidate.require_bundled_model()
     conversations = _load(args.tier)
     paths = _paths(args.tier)
     reports, spend = ingest_phase.run(
         conversations,
-        vault_root=paths["vaults"],
-        cache_root=paths["cache"],
+        vault_root=paths["vaults"] / candidate.executable_sha256[:16],
+        cache_root=paths["cache"] / candidate.public_contract_sha256[:16],
+        candidate=candidate,
+        profile_prefix=_profile_prefix(args, candidate),
         chunk_size=args.chunk_size,
         workers=args.conversation_workers,
     )
-    ingest_phase.write_report(reports, spend, paths["ingest"])
+    ingest_phase.write_report(reports, spend, paths["ingest"], candidate=candidate)
     written = sum(r.written for r in reports)
     print(f"\n{written} memories written. {spend.line()}")
     print(f"  -> {paths['ingest']}")
@@ -83,22 +117,26 @@ def cmd_ingest(args) -> int:
 
 
 def cmd_answer(args) -> int:
-    model = require_bundled_model()
+    candidate = _candidate(args)
+    model = candidate.require_bundled_model()
     print(f"encoder: {model['model']['name']} ({model['model']['dtype']})")
     conversations = _load(args.tier)
     paths = _paths(args.tier)
+    _require_matching_candidate(paths["ingest"], candidate)
     answers, spend = answer_phase.run(
         conversations,
-        vault_root=paths["vaults"],
+        vault_root=paths["vaults"] / candidate.executable_sha256[:16],
         out_path=paths["answers"],
-        limit=args.limit,
+        candidate=candidate,
+        profile_prefix=_profile_prefix(args, candidate),
+        top_k=args.top_k,
+        maximum_context_bytes=args.maximum_context_bytes,
         conversation_workers=args.conversation_workers,
         question_workers=args.question_workers,
     )
 
     evidence = {
-        c.conversation_id: metrics.ConversationEvidence(c.messages, render)
-        for c in conversations
+        c.conversation_id: metrics.ConversationEvidence(c.messages, render) for c in conversations
     }
     summary = metrics.summarise([a.as_dict() for a in answers], evidence)
     print()
@@ -113,10 +151,15 @@ def cmd_judge(args) -> int:
     paths = _paths(args.tier)
     if not paths["answers"].exists():
         raise SystemExit(f"{paths['answers']} not found — run the answer phase first")
+    if not paths["answers_meta"].exists():
+        raise SystemExit(
+            f"{paths['answers_meta']} not found — answers are not candidate-bound"
+        )
+    answer_inputs = json.loads(paths["answers_meta"].read_text())
+    if answer_inputs.get("answers_sha256") != sha256_file(paths["answers"]):
+        raise SystemExit("answers changed after their input manifest was written")
 
-    rubrics = {
-        (c.conversation_id, q.index): q.rubric for c in conversations for q in c.questions
-    }
+    rubrics = {(c.conversation_id, q.index): q.rubric for c in conversations for q in c.questions}
     references = {
         (c.conversation_id, q.index): list(q.raw.get("reasoning_steps") or [])
         for c in conversations
@@ -130,6 +173,21 @@ def cmd_judge(args) -> int:
         workers=args.judge_workers,
     )
     graded = [s for s in scores if s.score is not None]
+    paths["scores_meta"].write_text(
+        json.dumps(
+            {
+                "schema_version": "kbench.judge-inputs.v1",
+                "candidate": answer_inputs.get("candidate"),
+                "answers_sha256": sha256_file(paths["answers"]),
+                "scores_sha256": sha256_file(paths["scores"]),
+                "judge_model": settings.models.judge,
+                "release_evidence_claimed": False,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     print(f"\n{len(graded)}/{len(scores)} scored. {spend.line()}")
     print(f"  -> {paths['scores']}")
     return 0
@@ -138,6 +196,33 @@ def cmd_judge(args) -> int:
 def cmd_report(args) -> int:
     conversations = _load(args.tier)
     paths = _paths(args.tier)
+    if not paths["answers_meta"].exists():
+        raise SystemExit(
+            f"{paths['answers_meta']} not found — answers are not candidate-bound"
+        )
+    answer_inputs = json.loads(paths["answers_meta"].read_text())
+    if answer_inputs.get("answers_sha256") != sha256_file(paths["answers"]):
+        raise SystemExit("answers changed after their input manifest was written")
+    if paths["ingest"].exists():
+        ingest_inputs = json.loads(paths["ingest"].read_text())
+        for key in ("executable_sha256", "public_contract_sha256"):
+            if (answer_inputs.get("candidate") or {}).get(key) != (
+                ingest_inputs.get("candidate") or {}
+            ).get(key):
+                raise SystemExit(f"ingest and answer use different {key}")
+    if paths["scores"].exists():
+        if not paths["scores_meta"].exists():
+            raise SystemExit(f"{paths['scores_meta']} not found — scores are not candidate-bound")
+        score_inputs = json.loads(paths["scores_meta"].read_text())
+        for key in ("executable_sha256", "public_contract_sha256"):
+            if (score_inputs.get("candidate") or {}).get(key) != (
+                answer_inputs.get("candidate") or {}
+            ).get(key):
+                raise SystemExit(f"answers and scores use different {key}")
+        if score_inputs.get("answers_sha256") != sha256_file(paths["answers"]):
+            raise SystemExit("scores were produced from different answer bytes")
+        if score_inputs.get("scores_sha256") != sha256_file(paths["scores"]):
+            raise SystemExit("scores changed after their input manifest was written")
     text = report.build(
         conversations,
         answers_path=paths["answers"],
@@ -167,11 +252,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("phase", choices=["ingest", "answer", "judge", "report", "all"])
     parser.add_argument("--tier", default="100K", help="BEAM tier: 100K, 500K, 1M, 10M")
     parser.add_argument(
-        "--limit",
+        "--top-k",
         type=int,
-        default=settings.retrieval.compile_limit,
-        help="ceiling on memories per compile; see config.Retrieval for why "
-        "the default is not 5",
+        default=settings.retrieval.top_k,
+        help="explicit ranked-search depth; compare only runs with the same value",
+    )
+    parser.add_argument(
+        "--maximum-context-bytes",
+        type=int,
+        default=settings.retrieval.maximum_context_bytes,
+        help="explicit ranked-search context budget",
+    )
+    parser.add_argument("--candidate", help="path to the immutable kscope candidate")
+    parser.add_argument("--candidate-sha256", help="expected candidate SHA-256")
+    parser.add_argument("--public-contract", help="generated public-contract JSON")
+    parser.add_argument("--public-contract-sha256", help="expected public-contract SHA-256")
+    parser.add_argument(
+        "--profile-prefix",
+        default=None,
+        help="portable native profile prefix; default binds tier and candidate digest",
     )
     parser.add_argument("--chunk-size", type=int, default=2, help="messages per extraction")
     parser.add_argument(
@@ -186,9 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         default=settings.concurrency.questions,
         help="questions in flight per conversation",
     )
-    parser.add_argument(
-        "--judge-workers", type=int, default=settings.concurrency.judging
-    )
+    parser.add_argument("--judge-workers", type=int, default=settings.retrieval.judging)
     parser.add_argument("--judge-model", default=None, help="override the judge for this run")
     args = parser.parse_args(argv)
 

@@ -24,9 +24,10 @@ Everything here is therefore scoped to a conversation, and
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 # The four field names BEAM uses for evidence, depending on ability.
 EVIDENCE_FIELDS: tuple[str, ...] = (
@@ -198,11 +199,15 @@ def time_anchor(message: dict) -> str | None:
     raw = message.get("time_anchor")
     if not raw:
         return None
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     for pattern in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d %B %Y", "%B %d, %Y"):
         try:
-            return datetime.strptime(str(raw).strip(), pattern).strftime("%Y-%m-%dT00:00:00Z")
+            return (
+                datetime.strptime(str(raw).strip(), pattern)
+                .replace(tzinfo=timezone.utc)
+                .strftime("%Y-%m-%dT00:00:00Z")
+            )
         except ValueError:
             continue
     return None
@@ -262,9 +267,7 @@ def assert_conversations_are_isolated(conversations: list[Conversation]) -> dict
             f"dataset does not satisfy it."
         )
 
-    labelled = sum(
-        1 for c in conversations for q in c.questions if q.evidence_ids
-    )
+    labelled = sum(1 for c in conversations for q in c.questions if q.evidence_ids)
     return {
         "conversations": len(conversations),
         "messages": sum(len(c.messages) for c in conversations),

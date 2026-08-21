@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from kbench.kaleidoscope import (
     KaleidoscopeError,
     ReleaseCandidate,
     VaultPool,
+    _subprocess_runner,
     sha256_bytes,
     sha256_file,
 )
@@ -146,6 +148,9 @@ def test_candidate_and_contract_digests_are_mandatory_and_exact(tmp_path: Path):
     engine = FakeEngine()
     candidate = candidate_fixture(tmp_path, engine)
     assert candidate.evidence["signature_verified"] is False
+    assert candidate.acquisition_key == (
+        f"{candidate.executable_sha256[:12]}-{candidate.public_contract_sha256[:12]}"
+    )
 
     with pytest.raises(KaleidoscopeError, match="candidate digest"):
         ReleaseCandidate.load(
@@ -189,6 +194,28 @@ def test_candidate_and_contract_digests_are_mandatory_and_exact(tmp_path: Path):
     candidate.executable.write_bytes(b"changed after verification\n")
     with pytest.raises(KaleidoscopeError, match="changed after verification"):
         candidate.require_bundled_model()
+
+
+def test_candidate_process_receives_only_closed_non_secret_environment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, str] = {}
+
+    def fake_run(*_args, **kwargs):
+        captured.update(kwargs["env"])
+        return subprocess.CompletedProcess([], 0, "{}", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("HOME", "/safe/config-home")
+    monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-canary")
+    monkeypatch.setenv("KSCOPE_ROOT", "/private/vault-coordinate-canary")
+    monkeypatch.setenv("KSCOPE_WORKSPACE", "private-workspace-canary")
+
+    assert _subprocess_runner(Path("/absolute/kscope"), ["model"], None) == (0, "{}", "")
+    assert captured["HOME"] == "/safe/config-home"
+    assert "OPENAI_API_KEY" not in captured
+    assert "KSCOPE_ROOT" not in captured
+    assert "KSCOPE_WORKSPACE" not in captured
 
 
 def test_engine_phase_refuses_absent_candidate_before_dataset_or_vault_work():
@@ -474,9 +501,7 @@ def test_ingest_uses_runtime_vocabulary_and_current_remember_shape(
         batch_items=20,
     )
     assert report.written == 1
-    remember_payloads = [
-        payload for args, payload in engine.calls if args[-1:] == ["remember"]
-    ]
+    remember_payloads = [payload for args, payload in engine.calls if args[-1:] == ["remember"]]
     assert len(remember_payloads) == 1
     payload = remember_payloads[0]
     assert payload["mode"] == "create"

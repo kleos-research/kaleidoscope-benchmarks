@@ -26,6 +26,20 @@ CALL_TIMEOUT_SECONDS = 600
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PUBLIC_TOOLS = ("remember", "search")
+SAFE_ENVIRONMENT_KEYS = (
+    "APPDATA",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOCALAPPDATA",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+    "WINDIR",
+    "XDG_CONFIG_HOME",
+)
 
 CommandRunner = Callable[[Path, list[str], str | None], tuple[int, str, str]]
 
@@ -49,12 +63,17 @@ def sha256_file(path: Path) -> str:
 def _subprocess_runner(
     executable: Path, args: list[str], stdin: str | None
 ) -> tuple[int, str, str]:
+    # The candidate is an absolute executable and profile calls are explicit.
+    # It has no reason to receive API keys, vault-coordinate overrides, or the
+    # rest of the controller process environment. Keep only platform paths and
+    # locale settings needed to locate its non-secret profile configuration.
+    environment = {key: os.environ[key] for key in SAFE_ENVIRONMENT_KEYS if key in os.environ}
     completed = subprocess.run(
         [str(executable), *args],
         input=stdin,
         capture_output=True,
         text=True,
-        env=dict(os.environ),
+        env=environment,
         timeout=CALL_TIMEOUT_SECONDS,
         check=False,
     )
@@ -155,6 +174,11 @@ class ReleaseCandidate:
             "mcp_tools": list(PUBLIC_TOOLS),
             "signature_verified": False,
         }
+
+    @property
+    def acquisition_key(self) -> str:
+        """Filesystem/profile namespace bound to both immutable inputs."""
+        return f"{self.executable_sha256[:12]}-{self.public_contract_sha256[:12]}"
 
     def invoke(self, args: list[str], payload: dict | None = None) -> dict:
         """Execute only while the candidate still has the pinned digest."""
@@ -278,9 +302,7 @@ class VaultPool:
         else:
             root.parent.mkdir(parents=True, exist_ok=True)
             if root.exists():
-                self.candidate.invoke(
-                    ["profile", "import", profile, str(root), "process-local"]
-                )
+                self.candidate.invoke(["profile", "import", profile, str(root), "process-local"])
             else:
                 self.candidate.invoke(
                     ["init-profile", profile, str(root), self.created_at, "process-local"]

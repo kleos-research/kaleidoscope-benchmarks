@@ -144,9 +144,9 @@ before turn 12 changes the memory graph.
 Each conversation has one deterministic native profile and one vault. Restarting
 between ingest and answer reopens that same profile; public result metadata
 contains only profile-free candidate digests, never root/workspace/principal/
-journal coordinates. Local vault and extraction-cache directories are also
-keyed by the candidate or contract digest so a new candidate cannot silently
-reuse an earlier candidate's acquisition state. Answer and judge sidecars bind
+journal coordinates. Local profile names, vault directories, and extraction
+caches are keyed by both the candidate and contract digests so neither changed
+input can silently reuse earlier acquisition state. Answer and judge sidecars bind
 the exact answer/score bytes across phase restarts; report generation refuses
 stale or cross-candidate phase artifacts.
 

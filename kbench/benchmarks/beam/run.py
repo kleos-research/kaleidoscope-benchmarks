@@ -82,7 +82,7 @@ def _profile_prefix(args, candidate: ReleaseCandidate) -> str:
     if args.profile_prefix:
         return args.profile_prefix
     tier = "".join(character.lower() for character in args.tier if character.isalnum())
-    return f"beam-{tier}-{candidate.executable_sha256[:8]}"
+    return f"beam-{tier}-{candidate.executable_sha256[:8]}-{candidate.public_contract_sha256[:8]}"
 
 
 def _require_matching_candidate(path: Path, candidate: ReleaseCandidate) -> None:
@@ -102,8 +102,8 @@ def cmd_ingest(args) -> int:
     paths = _paths(args.tier)
     reports, spend = ingest_phase.run(
         conversations,
-        vault_root=paths["vaults"] / candidate.executable_sha256[:16],
-        cache_root=paths["cache"] / candidate.public_contract_sha256[:16],
+        vault_root=paths["vaults"] / candidate.acquisition_key,
+        cache_root=paths["cache"] / candidate.acquisition_key,
         candidate=candidate,
         profile_prefix=_profile_prefix(args, candidate),
         chunk_size=args.chunk_size,
@@ -125,7 +125,7 @@ def cmd_answer(args) -> int:
     _require_matching_candidate(paths["ingest"], candidate)
     answers, spend = answer_phase.run(
         conversations,
-        vault_root=paths["vaults"] / candidate.executable_sha256[:16],
+        vault_root=paths["vaults"] / candidate.acquisition_key,
         out_path=paths["answers"],
         candidate=candidate,
         profile_prefix=_profile_prefix(args, candidate),
@@ -152,9 +152,7 @@ def cmd_judge(args) -> int:
     if not paths["answers"].exists():
         raise SystemExit(f"{paths['answers']} not found — run the answer phase first")
     if not paths["answers_meta"].exists():
-        raise SystemExit(
-            f"{paths['answers_meta']} not found — answers are not candidate-bound"
-        )
+        raise SystemExit(f"{paths['answers_meta']} not found — answers are not candidate-bound")
     answer_inputs = json.loads(paths["answers_meta"].read_text())
     if answer_inputs.get("answers_sha256") != sha256_file(paths["answers"]):
         raise SystemExit("answers changed after their input manifest was written")
@@ -197,9 +195,7 @@ def cmd_report(args) -> int:
     conversations = _load(args.tier)
     paths = _paths(args.tier)
     if not paths["answers_meta"].exists():
-        raise SystemExit(
-            f"{paths['answers_meta']} not found — answers are not candidate-bound"
-        )
+        raise SystemExit(f"{paths['answers_meta']} not found — answers are not candidate-bound")
     answer_inputs = json.loads(paths["answers_meta"].read_text())
     if answer_inputs.get("answers_sha256") != sha256_file(paths["answers"]):
         raise SystemExit("answers changed after their input manifest was written")

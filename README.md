@@ -67,6 +67,30 @@ does not need an LLM key. It records no score and keeps
 `signature_verified: false`; passing it is functional candidate evidence, not
 a signed release or a completed BEAM run.
 
+### Credential-free DX-09 fixture pipeline
+
+For a complete local plumbing check without a model-provider key or BEAM data,
+run the synthetic DX-09 fixture against the frozen local candidate. The run root
+must be a fresh path outside this repository; it contains the isolated native
+profile home, vault, and all generated artifacts.
+
+```bash
+python -m kbench.benchmarks.beam.fixture \
+  --run-root /absolute/ignored/path/dx09-fixture-run \
+  --candidate /absolute/path/to/kscope \
+  --candidate-sha256 988192ac9677d5dd55a3642b2da493a0806bb860b5b3c0f509b37ddadee08825 \
+  --public-contract /absolute/path/to/public-contract.json \
+  --public-contract-sha256 a2357ed6c00e3e143d08581590571447e31d24fd0e7d2466d28a211a0515c75e
+```
+
+This lane performs batch `remember`, addressed read-back, one ranked `search`
+per question, deterministic label-driven answering, boolean local judging, and
+a report. `evidence.json` binds every artifact to the exact candidate, contract,
+and fixture corpus. It intentionally records `signature_verified: false`,
+`release_evidence_claimed: false`, and `production_comparable: false`; it emits
+no performance score. Passing proves the local call chain works, not how the
+system performs on BEAM.
+
 ## How it works
 
 Four phases. Each writes its output to disk, and **nothing downstream reruns

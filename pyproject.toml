@@ -16,6 +16,7 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
 kbench-beam = "kbench.benchmarks.beam.run:main"
+kbench-dx09-fixture = "kbench.benchmarks.beam.fixture:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -25,7 +26,7 @@ build-backend = "setuptools.build_meta"
 include = ["kbench*"]
 
 [tool.setuptools.package-data]
-"kbench.benchmarks.beam" = ["prompts/*.md"]
+"kbench.benchmarks.beam" = ["prompts/*.md", "fixtures/*.json"]
 
 [tool.ruff]
 line-length = 100

@@ -163,15 +163,35 @@ def _memory_item(record: dict, memory_type: str) -> dict:
     }
 
 
-def _safe_hits(raw_hits: list[dict]) -> list[dict]:
-    return [
-        {
-            "memory_id": hit.get("memory_id"),
-            "rank": hit.get("rank"),
-            "score": hit.get("score"),
-        }
-        for hit in raw_hits
-    ]
+def _stable_hits(raw_hits: list[dict], runtime_to_fixture: dict[str, str]) -> list[dict]:
+    hits = []
+    for hit in raw_hits:
+        memory_id = hit.get("memory_id")
+        fixture_id = runtime_to_fixture.get(memory_id)
+        if fixture_id is None:
+            raise KaleidoscopeError("fixture search returned an unknown memory id")
+        hits.append(
+            {
+                "fixture_id": fixture_id,
+                "rank": hit.get("rank"),
+                "score": hit.get("score"),
+            }
+        )
+    return hits
+
+
+def _stable_context(hits: list[dict], records: dict[str, dict]) -> str:
+    sections = []
+    for hit in hits:
+        fixture_id = hit["fixture_id"]
+        record = records[fixture_id]
+        sections.extend(
+            [
+                f"Memory {hit['rank']} | fixture={fixture_id}",
+                record["content_md"].rstrip(),
+            ]
+        )
+    return "\n\n".join(sections) + "\n"
 
 
 def _artifact_hashes(root: Path) -> dict[str, str]:
@@ -305,6 +325,7 @@ def execute(
         if len(results) != len(memories):
             raise KaleidoscopeError("fixture remember returned the wrong result count")
         logical_to_runtime: dict[str, str] = {}
+        records_by_fixture = {record["fixture_id"]: record for record in memories}
         for record, result in zip(memories, results):
             if result.get("status") in {"refused", "rejected"}:
                 raise KaleidoscopeError("fixture memory was refused")
@@ -320,32 +341,30 @@ def execute(
                 {
                     "conversation_id": conversation["conversation_id"],
                     "fixture_id": record["fixture_id"],
-                    "memory_id": memory_id,
                     "memory_type": memory_type,
                     "addressed_verified": True,
                 }
             )
 
+        runtime_to_logical = {runtime: logical for logical, runtime in logical_to_runtime.items()}
         for question in conversation["questions"]:
             searched = vault.ranked_search(
                 question["query"],
                 top_k=top_k,
                 maximum_context_bytes=maximum_context_bytes,
             )
-            hits = _safe_hits(searched["selected_hits"])
-            retrieved_ids = {
-                hit["memory_id"] for hit in hits if isinstance(hit.get("memory_id"), str)
-            }
-            required_ids = [logical_to_runtime[item] for item in question["required_memories"]]
+            hits = _stable_hits(searched["selected_hits"], runtime_to_logical)
+            retrieved_ids = {hit["fixture_id"] for hit in hits}
+            required_ids = question["required_memories"]
             retrieval_satisfied = set(required_ids).issubset(retrieved_ids)
             hypothesis = question["expected_answer"] if retrieval_satisfied else ""
             answer = {
                 "conversation_id": conversation["conversation_id"],
                 "question_id": question["question_id"],
                 "query": question["query"],
-                "required_memory_ids": required_ids,
+                "required_fixture_ids": required_ids,
                 "selected_hits": hits,
-                "context_text": searched.get("context_text", ""),
+                "context_md": _stable_context(hits, records_by_fixture),
                 "retrieval_satisfied": retrieval_satisfied,
                 "hypothesis": hypothesis,
                 "reader": "deterministic_fixture_labels",
@@ -353,7 +372,7 @@ def execute(
             answer_rows.append(answer)
             checks = {
                 "required_memories_retrieved": retrieval_satisfied,
-                "context_returned": bool(answer["context_text"]),
+                "context_returned": bool(answer["context_md"]),
                 "answer_exact": hypothesis == question["expected_answer"],
                 "single_ranked_search": True,
             }

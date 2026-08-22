@@ -54,6 +54,12 @@ python -m kbench.benchmarks.beam.run judge  --tier 100K
 python -m kbench.benchmarks.beam.run report --tier 100K
 ```
 
+For a credential-free functional pipeline check before BEAM data and provider
+credentials are available, use `python -m kbench.benchmarks.beam.fixture` as
+documented in the repository README. It uses a tiny synthetic corpus, writes its
+profile/vault/run output only to a fresh external root, and produces boolean
+contract checks rather than a benchmark score.
+
 ## Reading the output
 
 `evidence recall` is model-free and computed from BEAM's own `source_chat_ids`.

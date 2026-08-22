@@ -15,6 +15,7 @@ from kbench.kaleidoscope import KaleidoscopeError, sha256_bytes, sha256_file
 
 @dataclass
 class FixtureEngine:
+    id_namespace: str = "fixture"
     profiles: dict[str, dict] = field(default_factory=dict)
     memories: dict[str, list[dict]] = field(default_factory=dict)
     ranked_calls: int = 0
@@ -55,7 +56,7 @@ class FixtureEngine:
             results = []
             for item in payload["items"]:
                 number = len(self.memories[profile]) + 1
-                memory_id = f"mem_{profile[-4:]}_{number:02d}"
+                memory_id = f"mem_{self.id_namespace}_{profile[-4:]}_{number:02d}"
                 stored = {
                     "memory_id": memory_id,
                     "content_md": item["content_md"],
@@ -160,6 +161,48 @@ def test_fixture_requires_fresh_external_root(tmp_path: Path) -> None:
         fixture._fresh_external_root(existing)
     with pytest.raises(KaleidoscopeError, match="outside the repository"):
         fixture._fresh_external_root(REPO_ROOT / "forbidden-fixture-output")
+
+
+def test_fixture_public_artifacts_are_identical_across_runtime_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable, executable_sha256, contract, contract_sha256 = _candidate_files(tmp_path)
+    monkeypatch.setattr(fixture, "EXPECTED_CANDIDATE_SHA256", executable_sha256)
+    monkeypatch.setattr(fixture, "EXPECTED_PUBLIC_CONTRACT_SHA256", contract_sha256)
+
+    first_engine = FixtureEngine(id_namespace="first")
+    monkeypatch.setattr(fixture, "_isolated_runner", lambda _root: first_engine.run)
+    first_root = tmp_path / "first-run"
+    fixture.execute(
+        run_root=first_root,
+        executable=executable,
+        executable_sha256=executable_sha256,
+        public_contract=contract,
+        public_contract_sha256=contract_sha256,
+    )
+
+    second_engine = FixtureEngine(id_namespace="second")
+    monkeypatch.setattr(fixture, "_isolated_runner", lambda _root: second_engine.run)
+    second_root = tmp_path / "second-run"
+    fixture.execute(
+        run_root=second_root,
+        executable=executable,
+        executable_sha256=executable_sha256,
+        public_contract=contract,
+        public_contract_sha256=contract_sha256,
+    )
+
+    public_artifacts = (
+        "ingest.json",
+        "answers.jsonl",
+        "judgements.jsonl",
+        "report.md",
+        "evidence.json",
+    )
+    assert first_engine.memories != second_engine.memories
+    for name in public_artifacts:
+        assert (first_root / name).read_bytes() == (second_root / name).read_bytes()
 
 
 def test_fixture_refuses_any_candidate_other_than_the_frozen_pair(tmp_path: Path) -> None:

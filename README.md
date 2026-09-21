@@ -12,6 +12,8 @@ gets measured is what ships.
 | Suite | What it measures | Status |
 | --- | --- | --- |
 | **BEAM** | Ten memory abilities over conversations from 100K to 10M tokens | Supported |
+| **MemoryAgentBench** | Fact consolidation, single- and multi-hop, 6K to 262K context | [Results](docs/reports/memoryagentbench-2026-09.md) · harness in `contrib/` |
+| MemoryArena | Multi-session agentic tasks with memory across subtasks | In progress · harness in `contrib/` |
 | LongMemEval | Long-horizon question answering | Planned |
 | LoCoMo | Long conversational memory | Planned |
 

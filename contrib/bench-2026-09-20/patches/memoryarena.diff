@@ -1,0 +1,784 @@
+diff --git a/agent/math.py b/agent/math.py
+index e76c07c..d16a336 100644
+--- a/agent/math.py
++++ b/agent/math.py
+@@ -6,11 +6,12 @@ import sys
+ import re
+ import math
+ import pdb
++import time  # bench patch: timing the tool path so a stall is a number, not a gap
+ 
+ # Import backend system
+ import sys
+ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'env', 'env_systems'))
+-from formal_reasoning_env.llm_backend import create_backend, LLMBackend
++from formal_reasoning_env.llm_backend import create_backend, LLMBackend, GuardedClient
+ 
+ try:
+     from openai import OpenAI
+@@ -36,6 +37,10 @@ class MathAgent(BaseAgent):
+         self.history = []
+         self.max_tokens = max_tokens
+         self.backend_name = backend
++        # bench patch: a step that loses its tools must say so. `last_tool_path` is read by
++        # run_math.py into the per-subtask result row; `degraded_steps` is the run counter.
++        self.degraded_steps = 0
++        self.last_tool_path = None
+         
+         # Initialize LLM backend
+         try:
+@@ -293,9 +298,19 @@ Problem: {task}
+         # Tool calling is primarily supported by OpenAI
+         # For other backends, we can use the reasoning tool directly
+         if self.backend_name == "openai" and OPENAI_AVAILABLE:
++            _t0 = time.time()  # bench patch
++            self.last_tool_path = {"status": "ok", "error": None, "seconds": None}
+             try:
+                 action = self._act_with_tools(prompt)
++                self.last_tool_path["seconds"] = round(time.time() - _t0, 1)
+             except Exception as e:
++                # bench patch: the tool-calling path has just died and this step is about to
++                # be answered by a path with no tools. Before this, nothing recorded that --
++                # the step scored like any other and no ledger row survived the timeout.
++                self.degraded_steps += 1
++                self.last_tool_path = {"status": "degraded_no_tools",
++                                       "error": f"{type(e).__name__}: {str(e)[:200]}",
++                                       "seconds": round(time.time() - _t0, 1)}
+                 result, errors = self._reasoning_with_errors(prompt)
+                 errors.insert(0, f"tool loop failed: {type(e).__name__}: {str(e)[:200]}")
+                 if result:
+@@ -382,7 +397,8 @@ You may call the reasoning tool multiple times. After each tool result, reflect
+             {"role": "user", "content": prompt},
+         ]
+         
+-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL") if os.getenv("OPENAI_BASE_URL") else None)
++        # bench patch: was OpenAI(api_key=..., base_url=...); both create() calls below are unchanged
++        client = GuardedClient(role="agent")
+         max_tool_iterations = self._env_int("MATH_AGENT_MAX_TOOL_ITERATIONS", 3)
+         tool_trace = []
+ 
+diff --git a/configs/formal_reasoning_configs/math_kscope.json b/configs/formal_reasoning_configs/math_kscope.json
+new file mode 100644
+index 0000000..09a6a63
+--- /dev/null
++++ b/configs/formal_reasoning_configs/math_kscope.json
+@@ -0,0 +1,48 @@
++{
++  "task_name": "math",
++  "description": "Math reasoning task with memory system",
++  
++  "agent": {
++    "model_name": "gpt-5-mini",
++    "temperature": 0.0,
++    "max_tokens": 8192,
++    "backend": "openai",
++    "base_url": "<OPENAI_BASE_URL>"
++  },
++  
++  "memory": {
++    "session_wise_memory": true,
++    "judge_result_in_memory": false,
++    "memory_system_name": "kscope",
++    "base_url": "http://0.0.0.0:8000",
++    "timeout": 300
++  },
++  
++  "env": {
++    "env_name": "math",
++    "base_url": "http://0.0.0.0:8001",
++    "timeout": 300,
++    "env_config": {
++      "model_name": "gpt-5-mini",
++      "temperature": 1.0,
++      "max_tokens": 4096,
++      "backend": "openai",
++      "base_url": "<OPENAI_BASE_URL>",
++      "max_steps": 10
++    }
++  },
++  
++  "task_specific": {
++    "max_steps": 10,
++    "auto_eval_after_run": true,
++    "dataset": {
++      "hf_dataset": "ZexueHe/memoryarena",
++      "hf_config": "formal_reasoning_math",
++      "hf_split": "test"
++    }
++  },
++  
++  "output": {
++    "json_output_dir": "/path/to/kaleidoscope/experiments/bench-2026-09-20/results/arena/math"
++  }
++}
+diff --git a/configs/formal_reasoning_configs/math_kscope_none.json b/configs/formal_reasoning_configs/math_kscope_none.json
+new file mode 100644
+index 0000000..519928f
+--- /dev/null
++++ b/configs/formal_reasoning_configs/math_kscope_none.json
+@@ -0,0 +1,48 @@
++{
++  "task_name": "math",
++  "description": "Math reasoning task with memory system",
++  
++  "agent": {
++    "model_name": "gpt-5-mini",
++    "temperature": 0.0,
++    "max_tokens": 8192,
++    "backend": "openai",
++    "base_url": "<OPENAI_BASE_URL>"
++  },
++  
++  "memory": {
++    "session_wise_memory": true,
++    "judge_result_in_memory": false,
++    "memory_system_name": "kscope_none",
++    "base_url": "http://0.0.0.0:8000",
++    "timeout": 300
++  },
++  
++  "env": {
++    "env_name": "math",
++    "base_url": "http://0.0.0.0:8001",
++    "timeout": 300,
++    "env_config": {
++      "model_name": "gpt-5-mini",
++      "temperature": 1.0,
++      "max_tokens": 4096,
++      "backend": "openai",
++      "base_url": "<OPENAI_BASE_URL>",
++      "max_steps": 10
++    }
++  },
++  
++  "task_specific": {
++    "max_steps": 10,
++    "auto_eval_after_run": true,
++    "dataset": {
++      "hf_dataset": "ZexueHe/memoryarena",
++      "hf_config": "formal_reasoning_math",
++      "hf_split": "test"
++    }
++  },
++  
++  "output": {
++    "json_output_dir": "/path/to/kaleidoscope/experiments/bench-2026-09-20/results/arena/math"
++  }
++}
+diff --git a/configs/formal_reasoning_configs/phys_kscope.json b/configs/formal_reasoning_configs/phys_kscope.json
+new file mode 100644
+index 0000000..665678d
+--- /dev/null
++++ b/configs/formal_reasoning_configs/phys_kscope.json
+@@ -0,0 +1,48 @@
++{
++  "task_name": "phys",
++  "description": "Physics reasoning task with memory system",
++  
++  "agent": {
++    "model_name": "gpt-5-mini",
++    "temperature": 0.0,
++    "max_tokens": 8192,
++    "backend": "openai",
++    "base_url": "<OPENAI_BASE_URL>"
++  },
++  
++  "memory": {
++    "session_wise_memory": true,
++    "judge_result_in_memory": false,
++    "memory_system_name": "kscope",
++    "base_url": "http://0.0.0.0:8000",
++    "timeout": 300
++  },
++  
++  "env": {
++    "env_name": "phys",
++    "base_url": "http://0.0.0.0:8001",
++    "timeout": 300,
++    "env_config": {
++      "model_name": "gpt-5-mini",
++      "temperature": 1.0,
++      "max_tokens": 4096,
++      "backend": "openai",
++      "base_url": "<OPENAI_BASE_URL>",
++      "max_steps": 10
++    }
++  },
++  
++  "task_specific": {
++    "max_steps": 10,
++    "auto_eval_after_run": true,
++    "dataset": {
++      "hf_dataset": "ZexueHe/memoryarena",
++      "hf_config": "formal_reasoning_phys",
++      "hf_split": "test"
++    }
++  },
++  
++  "output": {
++    "json_output_dir": "/path/to/kaleidoscope/experiments/bench-2026-09-20/results/arena/phys"
++  }
++}
+diff --git a/configs/formal_reasoning_configs/phys_kscope_none.json b/configs/formal_reasoning_configs/phys_kscope_none.json
+new file mode 100644
+index 0000000..3f78b02
+--- /dev/null
++++ b/configs/formal_reasoning_configs/phys_kscope_none.json
+@@ -0,0 +1,48 @@
++{
++  "task_name": "phys",
++  "description": "Physics reasoning task with memory system",
++  
++  "agent": {
++    "model_name": "gpt-5-mini",
++    "temperature": 0.0,
++    "max_tokens": 8192,
++    "backend": "openai",
++    "base_url": "<OPENAI_BASE_URL>"
++  },
++  
++  "memory": {
++    "session_wise_memory": true,
++    "judge_result_in_memory": false,
++    "memory_system_name": "kscope_none",
++    "base_url": "http://0.0.0.0:8000",
++    "timeout": 300
++  },
++  
++  "env": {
++    "env_name": "phys",
++    "base_url": "http://0.0.0.0:8001",
++    "timeout": 300,
++    "env_config": {
++      "model_name": "gpt-5-mini",
++      "temperature": 1.0,
++      "max_tokens": 4096,
++      "backend": "openai",
++      "base_url": "<OPENAI_BASE_URL>",
++      "max_steps": 10
++    }
++  },
++  
++  "task_specific": {
++    "max_steps": 10,
++    "auto_eval_after_run": true,
++    "dataset": {
++      "hf_dataset": "ZexueHe/memoryarena",
++      "hf_config": "formal_reasoning_phys",
++      "hf_split": "test"
++    }
++  },
++  
++  "output": {
++    "json_output_dir": "/path/to/kaleidoscope/experiments/bench-2026-09-20/results/arena/phys"
++  }
++}
+diff --git a/env/env_systems/formal_reasoning_env/llm_backend.py b/env/env_systems/formal_reasoning_env/llm_backend.py
+index a35d6d0..3729aa6 100644
+--- a/env/env_systems/formal_reasoning_env/llm_backend.py
++++ b/env/env_systems/formal_reasoning_env/llm_backend.py
+@@ -5,7 +5,92 @@ Adapted from /home/zexueh/orcd/pool/memact/evaluation/core/llm_backend.py
+ 
+ from abc import ABC, abstractmethod
+ from typing import List, Dict, Any, Optional
++import json
+ import os
++import sys
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++# --- bench patch: every OpenAI-backend request goes through the spend-capped door -------------
++# <bench>/MemoryArena/env/env_systems/formal_reasoning_env/llm_backend.py -> <bench>
++_BENCH_ROOT = Path(os.environ.get("BENCH_ROOT") or Path(__file__).resolve().parents[4])
++if str(_BENCH_ROOT) not in sys.path:
++    sys.path.insert(0, str(_BENCH_ROOT))
++from common import llm as _bench_llm  # noqa: E402
++
++
++class BudgetStop(BaseException):
++    """The spend cap. A BaseException on purpose: the agent wraps its LLM calls in
++    `except Exception` retry loops, and a cap that a retry loop can swallow is not a cap."""
++
++
++def _record_failed_call(role: str, request: dict, seconds: float, exc: BaseException) -> dict:
++    """bench patch: a call that RAISED must leave a row behind.
++
++    `common/llm.py` appends to the ledger only after a response returns, so a request that
++    times out burns minutes of wall clock and writes nothing at all. Worse, `agent/math.py`
++    catches that exception and answers from a path that has no tools, so the run continues
++    and the degraded step is afterwards indistinguishable from one that ran as designed.
++
++    This writes the row shape every existing reader already parses -- `in`, `out` and
++    `est_usd` are 0, so no total moves -- plus `failed`, `error` and `tools`, and appends the
++    same row to `logs/arena_llm_failures.jsonl`.
++    """
++    row = {
++        "ts": round(time.time(), 3), "scope": os.environ.get("BENCH_SCOPE", "unscoped"),
++        "role": role, "tag": os.environ.get("BENCH_TAG", ""),
++        "model_asked": _bench_llm.DEPLOYMENT, "model_served": None,
++        "effort": request.get("reasoning_effort"), "temperature_sent": "temperature" in request,
++        "in": 0, "out": 0, "reasoning": 0,
++        "finish": "error:" + type(exc).__name__, "ms": int(seconds * 1000),
++        "est_usd": 0.0, "price_assumed": [_bench_llm.PRICE_IN, _bench_llm.PRICE_OUT],
++        "failed": True, "error": type(exc).__name__ + ": " + str(exc)[:300],
++        "tools": bool(request.get("tools")),
++        "n_messages": len(request.get("messages") or []),
++    }
++    try:
++        with _bench_llm._locked():
++            with open(_bench_llm.LEDGER, "a") as handle:
++                handle.write(json.dumps(row) + "\n")
++        path = _BENCH_ROOT / "logs" / "arena_llm_failures.jsonl"
++        path.parent.mkdir(parents=True, exist_ok=True)
++        with open(path, "a") as handle:
++            handle.write(json.dumps(row) + "\n")
++    except Exception:  # failing to log a failure must not replace the real error
++        pass
++    return row
++
++
++class _GuardedCompletions:
++    def __init__(self, role: str):
++        self._role = role
++
++    def create(self, **request):
++        if request.get("tools"):
++            # The deployment refuses function tools together with reasoning_effort on
++            # /v1/chat/completions ("use /v1/responses or set reasoning_effort to 'none'"), and
++            # common/llm.py speaks chat completions only and defaults the effort to "high". So a
++            # tool-bearing request goes out with effort "none"; requests without tools (the
++            # reasoning tool itself, the final answer, the judge) keep the door's default.
++            request.setdefault("reasoning_effort", "none")
++        started = time.time()
++        try:
++            return _bench_llm.create_raw(request, role=self._role, tag=os.environ.get("BENCH_TAG", ""))
++        except _bench_llm.BudgetExceeded as exc:
++            raise BudgetStop(str(exc)) from exc
++        except BaseException as exc:  # bench patch: record it, then propagate it unchanged
++            _record_failed_call(self._role, request, time.time() - started, exc)
++            raise
++
++
++class GuardedClient:
++    """Stands where `openai.OpenAI(...)` stood. Only `.chat.completions.create` exists, and it
++    hands the harness's request dict, untouched, to `common.llm.create_raw`."""
++
++    def __init__(self, role: str):
++        self.chat = SimpleNamespace(completions=_GuardedCompletions(role))
++# --- end bench patch ---------------------------------------------------------------------------
+ 
+ try:
+     from openai import OpenAI
+@@ -51,15 +136,14 @@ class OpenAIBackend(LLMBackend):
+         max_tokens: int = 2000,
+         temperature: float = 0.0,
+         api_key: Optional[str] = None,
+-        base_url: Optional[str] = None
++        base_url: Optional[str] = None,
++        role: str = "agent",
+     ):
+         if not OPENAI_AVAILABLE:
+             raise ImportError("openai package is required. Install with: pip install openai")
+         
+-        self.client = OpenAI(
+-            api_key=api_key if api_key else os.getenv("OPENAI_API_KEY"),
+-            base_url=base_url if base_url else os.getenv("OPENAI_BASE_URL")
+-        )
++        # bench patch: was OpenAI(api_key=..., base_url=...); api_key/base_url are now unused
++        self.client = GuardedClient(role=role)
+         self.model_name = model_name
+         self.temperature = temperature
+         self.max_tokens = max_tokens
+diff --git a/env/env_systems/math_env.py b/env/env_systems/math_env.py
+index 0ec795c..521a213 100644
+--- a/env/env_systems/math_env.py
++++ b/env/env_systems/math_env.py
+@@ -24,7 +24,8 @@ class MathEnvironment(BaseEnvironment):
+             model_name=self.model_name,
+             temperature=self.temperature,
+             max_tokens=self.max_tokens,
+-            base_url=self.config.get("base_url", None)
++            base_url=self.config.get("base_url", None),
++            role="judge",  # bench patch: ledger role; the request itself is unchanged
+         )
+         self.tools = {
+             "reasoning": {
+diff --git a/memory/memory_systems/__init__.py b/memory/memory_systems/__init__.py
+index a3f14d9..22e4ce3 100644
+--- a/memory/memory_systems/__init__.py
++++ b/memory/memory_systems/__init__.py
+@@ -1,11 +1,25 @@
+-from .mirix import MirixMemorySystem
+-from .long_context import LongContextMemorySystem
+-from .mem0 import Mem0MemorySystem
+-from .letta import LettaMemorySystem
+-from .rag import RAGMemorySystem
+-from .memorag import MemoRAGMemorySystem
+-from .langchain_graphrag import GraphRAGMemorySystem
+-from .amem import AMemMemorySystem
+-from .lightmem import LightMemMemorySystem
+-from .reasoningbank import ReasoningBankMemorySystem
+-from .zep import ZepMemorySystem
+\ No newline at end of file
++import importlib
++
++
++def _optional(module: str, name: str):
++    """bench patch: a shipped adapter whose third-party package is not installed resolves to
++    None instead of failing the import of every other adapter. Asking the server for such a
++    system still fails, at initialise time, with the name in the error."""
++    try:
++        return getattr(importlib.import_module(f".{module}", __name__), name)
++    except ImportError:
++        return None
++
++
++MirixMemorySystem = _optional("mirix", "MirixMemorySystem")
++LongContextMemorySystem = _optional("long_context", "LongContextMemorySystem")
++Mem0MemorySystem = _optional("mem0", "Mem0MemorySystem")
++LettaMemorySystem = _optional("letta", "LettaMemorySystem")
++RAGMemorySystem = _optional("rag", "RAGMemorySystem")
++MemoRAGMemorySystem = _optional("memorag", "MemoRAGMemorySystem")
++GraphRAGMemorySystem = _optional("langchain_graphrag", "GraphRAGMemorySystem")
++AMemMemorySystem = _optional("amem", "AMemMemorySystem")
++LightMemMemorySystem = _optional("lightmem", "LightMemMemorySystem")
++ReasoningBankMemorySystem = _optional("reasoningbank", "ReasoningBankMemorySystem")
++ZepMemorySystem = _optional("zep", "ZepMemorySystem")
++from .kscope_memory import KscopeMemorySystem
+diff --git a/memory/memory_systems/kscope_memory.py b/memory/memory_systems/kscope_memory.py
+new file mode 100644
+index 0000000..c48e0c1
+--- /dev/null
++++ b/memory/memory_systems/kscope_memory.py
+@@ -0,0 +1,291 @@
++"""Kaleidoscope (`kscope`) memory adapter for MemoryArena: one class, one `writer` switch.
++
++`writer="kscope"`  the write door turns each chunk into a structured delta (one LLM call,
++                   `common/writer.py`) and commits it to a kscope vault AT ONCE -- nothing is
++                   buffered, so nothing can be written with a later question in scope. The read
++                   door is one `kscope search`; every byte served comes out of that response.
++`writer="none"`    the blind control through the same seam: the write door drops the chunk and
++                   the read door returns the same tagged block holding the literal `None`.
++
++Isolation: one vault per `user_id` (run_math.py mints one uuid per paper) at
++`vaults/arena/<run_id>/<writer>/<user_id>`, created in the constructor through
++`common/kscope_io.Vault.create`, which refuses a root outside `vaults/`, refuses the personal
++vault, and refuses to reuse a root that already exists.
++
++The read-door string mirrors `rag.py` exactly. The tags are load-bearing:
++`env/env_systems/math_env.py` recovers the memory block by splitting on them.
++
++Every call appends one JSONL row, with a snapshot of the per-instance counters, to
++`logs/arena_adapter-<run_id>.jsonl`.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import re
++import sys
++import time
++import unicodedata
++from collections import Counter
++from pathlib import Path
++from typing import List, Optional, Tuple
++
++# <bench>/MemoryArena/memory/memory_systems/kscope_memory.py -> <bench>
++BENCH_ROOT = Path(os.environ.get("BENCH_ROOT") or Path(__file__).resolve().parents[3])
++if not (BENCH_ROOT / "common" / "kscope_io.py").is_file():
++    raise ImportError(f"kscope adapter: {BENCH_ROOT}/common is missing; set BENCH_ROOT")
++if str(BENCH_ROOT) not in sys.path:
++    sys.path.insert(0, str(BENCH_ROOT))
++
++from common import kscope_io, llm  # noqa: E402
++from common import writer as delta_writer  # noqa: E402
++
++_SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
++# The query bound is read out of the binary's own refusal, never written down here.
++_QUERY_BOUND = re.compile(r"over the (\d+)-byte bound")
++
++
++def _sha(text: str) -> str:
++    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
++
++
++def fallback_delta(unit: str) -> dict:
++    """The smallest delta `remember` accepts. It says nothing about the unit's content on
++    purpose: it exists so a chunk the writer could not structure is still stored verbatim
++    (and still reachable through the content channels) instead of being dropped."""
++    first = next((line.strip() for line in unit.splitlines() if line.strip()), "")
++    return {
++        "memory_type": "note",
++        "title": (first or "unstructured record")[:160],
++        "facts": [{"subject": "agent record", "predicate": "instance_of", "object": "unstructured record"}],
++    }
++
++
++def clean_query(prompt: str) -> str:
++    """`search` refuses control characters (a newline is one) and untrimmed edges. This
++    replaces each control character with a space and collapses whitespace runs. It touches
++    the QUERY only -- the prompt handed back to the agent is never altered."""
++    text = "".join(" " if unicodedata.category(ch) == "Cc" else ch for ch in prompt)
++    return " ".join(text.split())
++
++
++def bound_query(query: str, bound: int, keep: str) -> str:
++    """Cut `query` to at most `bound` UTF-8 bytes on a character and word boundary.
++
++    `keep="tail"` keeps the END of the prompt. The harness builds its prompt as BACKGROUND
++    then PROBLEM, so the end is where the question is; the head of a long prompt is LaTeX
++    preamble. `keep="head"` is the other choice, kept selectable so a run states which it used.
++    """
++    raw = query.encode("utf-8")
++    if len(raw) <= bound:
++        return query
++    if keep == "tail":
++        piece = raw[-bound:].decode("utf-8", errors="ignore")
++        if raw[-bound - 1:-bound] != b" " and " " in piece:
++            piece = piece.split(" ", 1)[1]
++    else:
++        piece = raw[:bound].decode("utf-8", errors="ignore")
++        if raw[bound:bound + 1] != b" " and " " in piece:
++            piece = piece.rsplit(" ", 1)[0]
++    return piece.strip()
++
++
++class KscopeMemorySystem:
++    _query_bound: Optional[int] = None  # learned once per process from the first refusal
++
++    def __init__(
++        self,
++        user_id: str,
++        writer: str = "kscope",
++        run_id: Optional[str] = None,
++        top_k: int = 10,
++        maximum_context_bytes: int = 32768,
++    ):
++        if writer not in ("kscope", "none"):
++            raise ValueError(f"writer must be 'kscope' or 'none', got {writer!r}")
++        run_id = run_id or os.environ.get("BENCH_RUN_ID") or ""
++        for label, value in (("run_id (BENCH_RUN_ID)", run_id), ("user_id", str(user_id or ""))):
++            if not _SAFE_COMPONENT.match(value):
++                raise ValueError(f"kscope adapter: {label} must be a safe path component, got {value!r}")
++        self.user_id = str(user_id)
++        self.writer = writer
++        self.run_id = run_id
++        self.top_k = top_k
++        self.maximum_context_bytes = maximum_context_bytes
++        self.query_keep = os.environ.get("KSCOPE_ARENA_QUERY_KEEP", "tail")
++        if self.query_keep not in ("tail", "head"):
++            raise ValueError("KSCOPE_ARENA_QUERY_KEEP must be 'tail' or 'head'")
++        self.log_path = BENCH_ROOT / "logs" / f"arena_adapter-{run_id}.jsonl"
++        self.root = kscope_io.VAULTS / "arena" / run_id / writer / self.user_id
++        # Refuses reuse: a second initialise for the same user_id is an error, not a shared vault.
++        self.vault = kscope_io.Vault.create(self.root, profile="shipped")
++        self.counters = {
++            "chunks_in": 0, "accepted": 0, "refused": 0, "extraction_failures": 0,
++            "fallback_stored": 0, "lost": 0, "dropped_by_design": 0,
++            "searches": 0, "search_failures": 0, "query_truncated": 0, "abstained": 0,
++            "served_counts": [], "omission_reasons": Counter(), "stop_reasons": Counter(),
++        }
++        self._log({"op": "init", "profile": self.vault.profile, "top_k": top_k,
++                   "maximum_context_bytes": maximum_context_bytes, "query_keep": self.query_keep,
++                   "writer_prompt_sha": delta_writer.prompt_sha() if writer == "kscope" else None})
++
++    # ------------------------------------------------------------------ log
++    def _log(self, row: dict) -> None:
++        counters = dict(self.counters)
++        counters["omission_reasons"] = dict(self.counters["omission_reasons"])
++        counters["stop_reasons"] = dict(self.counters["stop_reasons"])
++        counters["served_counts"] = list(self.counters["served_counts"])
++        base = {"ts": round(time.time(), 3), "run_id": self.run_id, "writer": self.writer,
++                "user_id": self.user_id, "root": str(self.root)}
++        base.update(row)
++        base["counters"] = counters
++        line = json.dumps(base, ensure_ascii=False)
++        for name in ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY"):  # an exception's text is logged
++            secret = os.environ.get(name, "").rstrip("/")
++            if secret:
++                line = line.replace(secret, "<redacted>").replace(secret.split("://", 1)[-1], "<redacted>")
++        self.log_path.parent.mkdir(parents=True, exist_ok=True)
++        with open(self.log_path, "a", encoding="utf-8") as handle:
++            handle.write(line + "\n")
++
++    # ----------------------------------------------------------- write door
++    def add_chunk(self, chunk: str):
++        started = time.time()
++        self.counters["chunks_in"] += 1
++        row = {"op": "add_chunk", "chunk_index": self.counters["chunks_in"] - 1,
++               "chunk_sha": _sha(chunk), "chunk_bytes": len(chunk.encode("utf-8")), "chunk": chunk}
++        if self.writer == "none":
++            self.counters["dropped_by_design"] += 1
++            row.update(outcome="dropped_by_design", ms=int((time.time() - started) * 1000))
++            self._log(row)
++            return {"stored": False, "writer": "none"}
++
++        delta, stats, error = None, {}, None
++        try:
++            delta, stats = delta_writer.extract(chunk, tag=f"{self.run_id}/{self.writer}/{self.user_id[:8]}")
++        except llm.BudgetExceeded:
++            raise  # the spend cap is never an "extraction failure"
++        except Exception as exc:  # a writer that raised still must not lose the chunk
++            error = f"{type(exc).__name__}: {str(exc)[:300]}"
++        row["extract"] = {**stats, "error": error}
++        used_fallback = delta is None
++        if used_fallback:
++            self.counters["extraction_failures"] += 1
++            item = {"content_md": chunk, "semantic_delta": fallback_delta(chunk)}
++        else:
++            item = delta_writer.to_item(chunk, delta)
++            row["delta"] = {"memory_type": item["semantic_delta"].get("memory_type"),
++                            "title": item["semantic_delta"].get("title"),
++                            "facts": len(item["semantic_delta"].get("facts") or []),
++                            "entities": len(item["semantic_delta"].get("entities") or []),
++                            "propose": len(item["semantic_delta"].get("propose") or [])}
++
++        stored, memory_id, refusal = self._remember(item)
++        if not stored and not used_fallback:
++            # kscope refused the writer's delta. Count it, keep the reason, and store the
++            # chunk under the fallback delta so the unit is not silently lost.
++            self.counters["refused"] += 1
++            row["refusal"] = refusal
++            used_fallback = True
++            stored, memory_id, second = self._remember({"content_md": chunk, "semantic_delta": fallback_delta(chunk)})
++            if not stored:
++                row["fallback_refusal"] = second
++        elif not stored:
++            self.counters["refused"] += 1
++            row["refusal"] = refusal
++        if stored:
++            self.counters["accepted"] += 1
++            if used_fallback:
++                self.counters["fallback_stored"] += 1
++        else:
++            self.counters["lost"] += 1
++        row.update(outcome="stored" if stored else "lost", fallback=used_fallback, memory_id=memory_id,
++                   ms=int((time.time() - started) * 1000))
++        self._log(row)
++        return {"stored": stored, "fallback": used_fallback, "memory_id": memory_id}
++
++    def _remember(self, item: dict) -> Tuple[bool, Optional[str], Optional[str]]:
++        rc, body, stderr = self.vault.remember_items([item])
++        body = body or {}
++        results = body.get("results") or []
++        first = results[0] if results and isinstance(results[0], dict) else {}
++        if rc == 0 and body.get("accepted_items") == 1:
++            return True, first.get("memory_id"), None
++        reason = first.get("reason") or first.get("message") or body.get("message") or (stderr or "").strip()
++        return False, None, f"rc={rc} status={body.get('status') or first.get('status')} {str(reason)[:500]}"
++
++    # ------------------------------------------------------------ read door
++    def wrap_user_prompt(self, prompt: str) -> str:
++        served = self._search(prompt) if self.writer == "kscope" else self._no_search(prompt)
++        lines = ["<memory_context>"]
++        if served:
++            lines.extend(f"<memory>{text}</memory>" for text in served)
++        else:
++            lines.append("None")
++        lines.append("</memory_context>")
++        lines.append(f"User: {prompt}")
++        return "\n".join(lines)
++
++    def _no_search(self, prompt: str) -> List[str]:
++        self._log({"op": "wrap_user_prompt", "prompt_sha": _sha(prompt),
++                   "prompt_bytes": len(prompt.encode("utf-8")), "served": 0, "outcome": "none_by_design"})
++        return []
++
++    def _search(self, prompt: str) -> List[str]:
++        started = time.time()
++        cls = type(self)
++        self.counters["searches"] += 1
++        cleaned = clean_query(prompt)
++        row = {"op": "wrap_user_prompt", "prompt_sha": _sha(prompt), "prompt_bytes": len(prompt.encode("utf-8")),
++               "cleaned_query_bytes": len(cleaned.encode("utf-8")), "query_keep": self.query_keep}
++        query, body, failure = cleaned, None, None
++        if not cleaned:
++            failure = "empty query after cleaning"
++        else:
++            if cls._query_bound is not None:
++                query = bound_query(cleaned, cls._query_bound, self.query_keep)
++            rc, body, stderr = self.vault.search(query, self.top_k, self.maximum_context_bytes)
++            refusal = ((body or {}).get("message") or stderr or "")
++            learned = _QUERY_BOUND.search(refusal) if rc != 0 else None
++            if learned:
++                # The first over-long query is refused once; the bound is the binary's own number.
++                cls._query_bound = int(learned.group(1))
++                row["bound_learned_from_refusal"] = cls._query_bound
++                query = bound_query(cleaned, cls._query_bound, self.query_keep)
++                rc, body, stderr = self.vault.search(query, self.top_k, self.maximum_context_bytes)
++                refusal = ((body or {}).get("message") or stderr or "")
++            if rc != 0 or not isinstance(body, dict) or "selected_hits" not in body:
++                failure = f"rc={rc} {str(refusal)[:300]}"
++        truncated = query != cleaned
++        if truncated:
++            self.counters["query_truncated"] += 1
++        row.update(query=query, query_bytes=len(query.encode("utf-8")), query_truncated=truncated,
++                   query_bytes_dropped=len(cleaned.encode("utf-8")) - len(query.encode("utf-8")))
++        if failure:
++            self.counters["search_failures"] += 1
++            self.counters["served_counts"].append(0)
++            row.update(outcome="search_failed", failure=failure, served=0, ms=int((time.time() - started) * 1000))
++            self._log(row)
++            return []
++
++        hits = body.get("selected_hits") or []
++        served = [hit.get("content_md") or "" for hit in hits]
++        omissions = Counter((o or {}).get("reason") or "unknown" for o in (body.get("omissions") or []))
++        abstained = bool((body.get("abstention") or {}).get("abstained"))
++        self.counters["served_counts"].append(len(served))
++        self.counters["omission_reasons"].update(omissions)
++        self.counters["stop_reasons"][str(body.get("stop_reason"))] += 1
++        if abstained:
++            self.counters["abstained"] += 1
++        row.update(outcome="served", served=len(served), served_memory_ids=[hit.get("memory_id") for hit in hits],
++                   served_bytes=sum(len(text.encode("utf-8")) for text in served),
++                   omitted_hits=body.get("omitted_hits"), omission_reasons=dict(omissions),
++                   stop_reason=body.get("stop_reason"), abstained=abstained,
++                   served_floor=body.get("served_floor"), exposure_id=body.get("exposure_id"),
++                   context_bytes=body.get("context_bytes"),
++                   # a served memory that itself holds the harness's tags makes math_env.py cut the block short
++                   served_holding_context_tag=sum(1 for text in served if "memory_context>" in text),
++                   ms=int((time.time() - started) * 1000))
++        self._log(row)
++        return served
+diff --git a/memory/server.py b/memory/server.py
+index 0c5484f..5f31dff 100644
+--- a/memory/server.py
++++ b/memory/server.py
+@@ -18,6 +18,7 @@ from memory_systems import (
+     LightMemMemorySystem,
+     ReasoningBankMemorySystem,
+     ZepMemorySystem,
++    KscopeMemorySystem,
+ )
+ 
+ 
+@@ -94,6 +95,12 @@ def initialize(req: InitializeRequest):
+     #     memory_system = GraphRAGMemorySystem(local_dir=os.getenv("GRAPHRAG_LOCAL_DIR"))
+     elif name in {"reasoningbank"}:
+         memory_system = ReasoningBankMemorySystem(user_id=req.user_id)
++    elif name in {"kscope", "kscope_none"}:
++        # bench patch: factory() below takes no arguments, and a disk-backed adapter must know
++        # whose vault it is -- one kscope vault per user_id. `kscope_none` is the blind control.
++        memory_system = KscopeMemorySystem(
++            user_id=req.user_id, writer="kscope" if name == "kscope" else "none"
++        )
+     else:
+         factory = MEMORY_FACTORIES.get(name)
+         if factory is None:
+diff --git a/run_math.py b/run_math.py
+index 01097ae..aef60ce 100644
+--- a/run_math.py
++++ b/run_math.py
+@@ -204,6 +204,9 @@ def run_task_with_memory_and_env(
+                     
+                 }
+         logs.append({
++            # bench patch: which path answered this subtask, and how long it took to find out
++            "agent_tool_path": getattr(agent, "last_tool_path", None),
++            "agent_degraded_steps_so_far": getattr(agent, "degraded_steps", None),
+             "query_id": subtask_idx,
+             "query": subtask,
+             "memory_context": result['observation']['memory_context'] if 'memory_context' in result['observation'] else None,

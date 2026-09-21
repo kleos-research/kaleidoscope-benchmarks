@@ -1,0 +1,1180 @@
+diff --git a/agent.py b/agent.py
+index ae859fb..3d75f48 100644
+--- a/agent.py
++++ b/agent.py
+@@ -1,6 +1,9 @@
+ import os
+ import json
+-import torch
++try:  # kscope: used only by local-model paths; guarded rather than installed
++    import torch
++except ImportError:
++    torch = None
+ import tiktoken
+ from openai import OpenAI
+ from utils.templates import get_template
+@@ -10,9 +13,12 @@ from utils.eval_data_utils import (
+ import re
+ import time
+ 
+-from langchain_core.documents import Document
+-from transformers import BitsAndBytesConfig
+-from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaConfig
++try:  # kscope: used only by the langchain / local-model RAG paths; guarded rather than installed
++    from langchain_core.documents import Document
++    from transformers import BitsAndBytesConfig
++    from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaConfig
++except ImportError:
++    Document = BitsAndBytesConfig = AutoTokenizer = AutoModelForCausalLM = LlamaConfig = None
+ 
+ 
+ class AgentWrapper:
+@@ -80,6 +86,9 @@ class AgentWrapper:
+         elif self._is_agent_type("agentmemory"):
+             from methods.agentmemory import initialize_agentmemory_agent
+             initialize_agentmemory_agent(self, agent_config)
++        elif self._is_agent_type("kscope"):
++            from methods.kscope_agent import initialize_kscope_agent
++            initialize_kscope_agent(self, agent_config, dataset_config)
+         elif self._is_agent_type("rag"):
+             self._initialize_rag_agent(agent_config, dataset_config)
+         else:
+@@ -279,6 +288,9 @@ class AgentWrapper:
+             return self._handle_long_context_agent(message, memorizing)
+         elif any(self._is_agent_type(agent_type) for agent_type in ["letta", "cognee", "mem0", "zep", "knowl", "agentmemory"]):
+             return self._handle_memory_agent(message, memorizing, query_id, context_id)
++        elif self._is_agent_type("kscope"):
++            from methods.kscope_agent import handle_kscope_agent
++            return handle_kscope_agent(self, message, memorizing, query_id, context_id)
+         elif self._is_agent_type("rag"):
+             return self._handle_rag_agent(message, memorizing, query_id, context_id)
+         else:
+diff --git a/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna-bm25units.yaml b/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna-bm25units.yaml
+new file mode 100644
+index 0000000..b39bcd5
+--- /dev/null
++++ b/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna-bm25units.yaml
+@@ -0,0 +1,23 @@
++# Kaleidoscope (kscope) adapter, BM25-OVER-UNITS reference arm. No writer, no vault: the same units
++# the kscope arm stores (cut by the same rule from the same chunks, verified against the master
++# manifest) are indexed with the harness's own BM25 retriever (rank_bm25 BM25Okapi over whitespace
++# tokens, as langchain's BM25Retriever does for Simple_rag_bm25), and the SAME reader answers over
++# the top-k units. Every value except agent_name, kscope_writer and output_dir is identical to
++# Kscope_gpt-5.6-luna.yaml; see that file for why the name is shaped the way it is.
++agent_name: Simple_rag_kscope_bm25units
++model: gpt-5.6-luna
++input_length_limit: 10000000
++buffer_length: 200
++output_dir: /path/to/kaleidoscope/experiments/bench-2026-09-20/results/mab/unlaunched/bm25_units
++
++retrieve_num: 10
++kscope_writer: bm25_units
++kscope_profile: shipped
++kscope_maximum_context_bytes: 32768
++kscope_unit_tokens: 350
++# At most 12 sentences per unit as well. `remember` caps a memory at 32 entities and 32 facts and
++# a fact needs two endpoints, so 16 facts is the most a memory can declare fully; a 350-token unit
++# of this corpus held ~24 and the writer left the excess in prose. Derived from the caps, not fitted.
++kscope_unit_sentences: 12
++kscope_reader_max_completion_tokens: 4000
++kscope_writer_workers: 4   # unused by this arm (no writer); kept identical to the other configs
+diff --git a/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna-fullcontext.yaml b/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna-fullcontext.yaml
+new file mode 100644
+index 0000000..e3a6046
+--- /dev/null
++++ b/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna-fullcontext.yaml
+@@ -0,0 +1,30 @@
++# Kaleidoscope (kscope) adapter, FULL-CONTEXT ceiling arm. No writer, no vault, no retrieval and
++# no memory system of any kind: every unit of the corpus, in the benchmark's own order, goes into
++# the reader's prompt, and the SAME reader answers. `none` is the opposite end of the same axis --
++# it gets no context at all -- so the two bracket every memory arm between them.
++#
++# The units are cut by the same rule from the same chunks and verified byte-for-byte against the
++# master manifest, so this arm sees exactly the text the kscope and bm25_units arms saw. The prompt
++# scaffold is the harness's own (`Memory i:` blocks then the question); the only difference from
++# every other arm is what fills the memory block.
++#
++# Every value except agent_name, kscope_writer and output_dir is identical to
++# Kscope_gpt-5.6-luna.yaml; see that file for why the name is shaped the way it is.
++agent_name: Simple_rag_kscope_fullcontext
++model: gpt-5.6-luna
++input_length_limit: 10000000
++buffer_length: 200
++output_dir: /path/to/kaleidoscope/experiments/bench-2026-09-20/results/mab/unlaunched/full_context
++
++retrieve_num: 10          # unused by this arm (nothing is retrieved); kept identical to the others
++kscope_writer: full_context
++kscope_profile: shipped   # unused by this arm (no vault is opened); kept identical to the others
++kscope_maximum_context_bytes: 32768   # unused by this arm (no search is issued)
++kscope_unit_tokens: 350
++# At most 12 sentences per unit as well. `remember` caps a memory at 32 entities and 32 facts and
++# a fact needs two endpoints, so 16 facts is the most a memory can declare fully; a 350-token unit
++# of this corpus held ~24 and the writer left the excess in prose. Derived from the caps, not fitted.
++# This arm stores nothing, but the unit rule must match the master's or the manifest check refuses.
++kscope_unit_sentences: 12
++kscope_reader_max_completion_tokens: 4000
++kscope_writer_workers: 4   # unused by this arm (no writer); kept identical to the other configs
+diff --git a/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna-none.yaml b/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna-none.yaml
+new file mode 100644
+index 0000000..85b2a3c
+--- /dev/null
++++ b/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna-none.yaml
+@@ -0,0 +1,21 @@
++# Kaleidoscope (kscope), NO-WRITER arm: the blind floor. Ingestion stores nothing, the vault stays
++# empty, the search serves nothing, and the same reader answers from the task prompt alone.
++# Every value except kscope_writer and output_dir is identical to Kscope_gpt-5.6-luna.yaml; see
++# that file for why the name is shaped the way it is.
++agent_name: Simple_rag_kscope_none
++model: gpt-5.6-luna
++input_length_limit: 10000000
++buffer_length: 200
++output_dir: /path/to/kaleidoscope/experiments/bench-2026-09-20/results/mab/unlaunched/none
++
++retrieve_num: 10
++kscope_writer: none
++kscope_profile: shipped
++kscope_maximum_context_bytes: 32768
++kscope_unit_tokens: 350
++# At most 12 sentences per unit as well. `remember` caps a memory at 32 entities and 32 facts and
++# a fact needs two endpoints, so 16 facts is the most a memory can declare fully; a 350-token unit
++# of this corpus held ~24 and the writer left the excess in prose. Derived from the caps, not fitted.
++kscope_unit_sentences: 12
++kscope_reader_max_completion_tokens: 4000
++kscope_writer_workers: 4   # concurrent writer calls inside one chunk; writes stay in unit order
+diff --git a/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna.yaml b/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna.yaml
+new file mode 100644
+index 0000000..5abf422
+--- /dev/null
++++ b/configs/agent_conf/RAG_Agents/gpt-5.6-luna/Kscope_gpt-5.6-luna.yaml
+@@ -0,0 +1,31 @@
++# Kaleidoscope (kscope), WRITING arm. One LLM call per ~350-token unit produces the structured
++# delta `remember` requires, the unit is stored verbatim, and the reader sees what `search` serves.
++#
++# The name is load-bearing twice. "rag" selects the rag_agent prompt template
++# (utils/templates.py normalize_agent_name) -- the one Simple_rag_bm25 gets, since this is also
++# retrieve-then-read -- and the rag-shaped agent save folder (initialization.py). "kscope" selects
++# the adapter in agent.py, which is checked ahead of the generic "rag" branch.
++#
++# retrieve_num, input_length_limit and buffer_length are copied from Simple_rag_bm25.
++# No temperature key: the deployment is a reasoning model and none is sent (shipped configs say 0.7).
++# `model` must equal the deployment common/llm.py pins; the adapter checks it.
++#
++# output_dir is rewritten per run by mab/run_mab.py. The harness RESUMES from an existing results
++# file, so a second run into the same directory would re-ingest and then skip every question.
++agent_name: Simple_rag_kscope
++model: gpt-5.6-luna
++input_length_limit: 10000000
++buffer_length: 200
++output_dir: /path/to/kaleidoscope/experiments/bench-2026-09-20/results/mab/unlaunched/kscope
++
++retrieve_num: 10
++kscope_writer: kscope
++kscope_profile: shipped
++kscope_maximum_context_bytes: 32768
++kscope_unit_tokens: 350
++# At most 12 sentences per unit as well. `remember` caps a memory at 32 entities and 32 facts and
++# a fact needs two endpoints, so 16 facts is the most a memory can declare fully; a 350-token unit
++# of this corpus held ~24 and the writer left the excess in prose. Derived from the caps, not fitted.
++kscope_unit_sentences: 12
++kscope_reader_max_completion_tokens: 4000
++kscope_writer_workers: 4   # concurrent writer calls inside one chunk; writes stay in unit order
+diff --git a/methods/kscope_agent.py b/methods/kscope_agent.py
+new file mode 100644
+index 0000000..156dd0f
+--- /dev/null
++++ b/methods/kscope_agent.py
+@@ -0,0 +1,994 @@
++"""Kaleidoscope (kscope) as a retrieve-then-read memory method for MemoryAgentBench.
++
++kscope is a local memory store: one binary, no model inside it, no network. `remember` takes a
++STRUCTURED delta (entities + subject/predicate/object facts, at most 32 facts per memory) and
++`search` reads. Something has to turn text into that delta, so this adapter has three arms, chosen
++by `kscope_writer` in the agent config:
++
++    none        ingestion stores nothing. The vault stays empty, the search serves nothing, and
++                the reader answers from the task prompt alone. The blind floor.
++    kscope      every ingested chunk is cut into small units -- consecutive sentences, at most
++                `kscope_unit_sentences` sentences or `kscope_unit_tokens` tokens, whichever comes
++                first -- one LLM call per unit produces the delta (common/writer.py), and the unit
++                is stored VERBATIM as the memory's content.
++    bm25_units  the same units, indexed by the harness's own BM25 (rank_bm25 BM25Okapi over
++                whitespace tokens, which is what langchain's BM25Retriever does for Simple_rag_bm25),
++                no writer, no vault. The lexical reference arm: same units, same reader.
++    full_context  the same units, ALL of them, in ingestion order, in the reader's prompt. No
++                writer, no vault, no retrieval, no memory system of any kind -- the ceiling arm
++                that answers "why do I need a memory store when I can put everything in the
++                prompt?". `none` is the opposite end: it gets no context at all.
++
++All arms run the same answer path: the harness's own retrieval-query extraction, one retrieval
++(kscope `search`, or BM25 top-k), the BM25 baseline's reader assembly, one shared reader function.
++
++Two ways for the `kscope` arm to get its memories:
++  * in-process ingestion (the smoke runs): a fresh vault is created in the constructor and every
++    chunk the harness hands over is written during ingestion; or
++  * `kscope_master_manifest`: a MASTER vault was ingested once by mab/ingest_master.py and sealed
++    (a sha256 over every file); the constructor verifies the seal, clones the master copy-on-write
++    (`cp -Rc`), verifies the clone carries the same seal, and `ingest` then only CHECKS that every
++    chunk (and every unit cut from it) is byte-identical to what the master was built from. No
++    writer call and no `remember` happen in the harness process. The master is never searched.
++    The single-hop and multi-hop rows of one length carry a byte-identical context, so this is the
++    only way to ingest each length once.
++
++Rules this file exists to keep (notes/SHARED_RULES.md):
++  * One vault per adapter instance, created (or cloned) in the constructor under
++    vaults/mab/<run_id>/... with a uuid in its name. The harness builds a fresh AgentWrapper per
++    context, so one instance is one context. Nothing is keyed on a counter.
++  * Writes happen DURING ingestion. Nothing is buffered across `send_message` calls, and
++    `ingest` refuses to run once a question has been seen, so no question can be in scope when
++    the writer runs. The writer's only input is the unit text.
++  * The text the reader sees comes out of a kscope `search` response, never out of a Python dict
++    (the bm25_units arm serves from its BM25 index by construction, and says so in its name).
++  * The writer's delta is passed through as written, with ONE exception: `coerce_propose` below
++    repairs the TYPES of the `propose` block, because the writer sends scalars where the store
++    requires sequences and a boolean, and `remember` then refuses the whole item. Types only.
++  * Every LLM call goes through common/llm.py (spend cap, ledger) and every kscope call through
++    common/kscope_io.py (isolation guard, call log). The harness's own OpenAI client is never
++    constructed: it falls through to the public endpoint on any exception.
++  * A call that RAISES leaves a row behind. common/llm.py appends to the ledger only after a
++    response returns, so `_call_recorded` writes a zero-cost `failed` row to the ledger and to
++    logs/mab_llm_failures.jsonl for every exception, then backs off and retries. A reader call that
++    still fails after every retry is answered with an EMPTY string and flagged `reader_error`, so
++    the harness scores it 0 and the checker reports it separately from a wrong answer. A writer
++    call that still fails is an extraction failure: the unit is stored with the fallback delta and
++    counted (`writer_errors`). BudgetExceeded is never retried and never caught.
++  * The adapter never creates the harness's agent save folder. If that folder exists the harness
++    skips ingestion silently (initialization.py:165-171), so its existence is refused up front and
++    `answer` refuses to run with zero ingested chunks.
++
++The reader's output cap. Shipped readers pass `max_tokens=generation_max_length` only when the
++model name contains "gpt-4". Ours does not, so the cap would silently vanish, and under substring
++match a verbose answer naming both the stale and the current value would score 1.0. An API-level
++cap of 10 is not usable either: this deployment is a reasoning model and its thinking counts
++against `max_completion_tokens`. So the reader gets a generous API budget and the VISIBLE answer
++is truncated to `generation_max_length` tokens with the harness tokenizer before it is returned.
++That is applied identically to every arm, and every truncation is logged.
++
++No temperature is sent (shipped configs say 0.7): the reasoning deployment may reject it, and
++not sending one keeps runs as repeatable as the endpoint allows.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import subprocess
++import sys
++import time
++import uuid
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++
++BENCH_ROOT = Path("/path/to/kaleidoscope/experiments/bench-2026-09-20")
++if str(BENCH_ROOT) not in sys.path:
++    sys.path.insert(0, str(BENCH_ROOT))
++
++from common import kscope_io, llm, writer  # noqa: E402  (the only doors to kscope and to the LLM)
++
++HARNESS_ROOT = Path(__file__).resolve().parents[1]
++WRITERS = ("none", "kscope", "bm25_units", "full_context")
++REMEMBER_BATCH = 20  # the shipped per-call limit; overflow is a refusal
++FAILURES_LOG = BENCH_ROOT / "logs" / "mab_llm_failures.jsonl"
++# Back-off between attempts after an LLM call raised (the SDK has already retried 4 times inside
++# each attempt). Six attempts, then the call is a recorded failure.
++RETRY_BACKOFF_SECONDS = (5, 10, 20, 40, 80, 120)
++
++# The `full_context` arm alone runs into the gateway's per-minute TOKEN budget: one of its prompts
++# is ~295,000 tokens against a published ceiling of 500,000 tokens/min (measured 2026-09-20 from
++# the x-ratelimit-limit-tokens header on a deliberate 429; a single 500,007-token request can never
++# succeed, because it asks for the whole minute at once). Two consequences, both handled here and
++# nowhere else -- the retrieval arms send 200-2,000 token prompts and never meet this wall:
++#   * a 429 is not a failure, it is the limiter asking for a wait. It gets its own long schedule
++#     and honours the server's `retry-after`.
++#   * before each call the arm waits until the RECENT token spend leaves room for its prompt.
++#     "Recent" is read from common/llm.py's ledger, which every benchmark process on this machine
++#     appends to -- so the pacer sees the other run's consumption as well as its own.
++RATE_BACKOFF_SECONDS = (30, 30, 45, 60, 90, 120, 150, 180, 240, 300)
++TPM_LIMIT = int(os.environ.get("BENCH_TPM_LIMIT", "500000"))
++TPM_TARGET_FRACTION = float(os.environ.get("BENCH_TPM_TARGET_FRACTION", "0.80"))
++PACE_MAX_WAIT_SECONDS = float(os.environ.get("BENCH_PACE_MAX_WAIT", "300"))
++LEDGER_TAIL_BYTES = 2_000_000
++
++
++# This process's own calls, as (moment the request was SENT, tokens it asked for). The limiter
++# charges at admission; common/llm.py writes its ledger row when the call returns, ~40-60 s later
++# for a prompt this size. Pacing on the ledger alone would therefore wait a further minute from the
++# END of each call and halve the throughput for no reason.
++_OWN_CALLS: list[tuple[float, int]] = []
++
++
++def note_own_call(start_ts: float, tokens: int) -> None:
++    _OWN_CALLS.append((start_ts, tokens))
++    cutoff = time.time() - 300
++    while _OWN_CALLS and _OWN_CALLS[0][0] < cutoff:
++        _OWN_CALLS.pop(0)
++
++
++def other_scope_tokens(window_seconds: float = 60.0) -> int:
++    """Tokens billed in the last `window_seconds` by every scope EXCEPT this one, read from the
++    tail of the shared ledger. That is the other benchmark's draw on the same per-minute budget."""
++    now = time.time()
++    mine = os.environ.get("BENCH_SCOPE", "unscoped")
++    try:
++        size = llm.LEDGER.stat().st_size
++        with open(llm.LEDGER, "rb") as handle:
++            handle.seek(max(0, size - LEDGER_TAIL_BYTES))
++            blob = handle.read()
++    except OSError:
++        return 0
++    total = 0
++    for line in blob.split(b"\n")[1:]:
++        if not line.strip():
++            continue
++        try:
++            row = json.loads(line)
++        except ValueError:
++            continue
++        if row.get("scope") != mine and now - (row.get("ts") or 0) <= window_seconds:
++            total += (row.get("in") or 0) + (row.get("out") or 0)
++    return total
++
++
++def recent_tokens(window_seconds: float = 60.0) -> int:
++    now = time.time()
++    own = sum(tokens for ts, tokens in _OWN_CALLS if now - ts <= window_seconds)
++    return own + other_scope_tokens(window_seconds)
++
++
++def pace_for(prompt_tokens: int) -> dict:
++    """Block until the last minute's token spend leaves room for `prompt_tokens`, or until
++    PACE_MAX_WAIT_SECONDS has passed (the limiter's own 429 is the backstop, not this)."""
++    budget = TPM_LIMIT * TPM_TARGET_FRACTION
++    waited = 0.0
++    started = time.time()
++    observed = recent_tokens()
++    other = other_scope_tokens()
++    while observed + prompt_tokens > budget and waited < PACE_MAX_WAIT_SECONDS:
++        time.sleep(2.0)
++        waited = time.time() - started
++        observed = recent_tokens()
++        other = other_scope_tokens()
++    return {"waited_seconds": round(waited, 1), "recent_tokens_at_start": observed,
++            "other_scopes_tokens": other, "budget": int(budget)}
++
++
++def _retry_after_seconds(exc) -> float | None:
++    response = getattr(exc, "response", None)
++    headers = getattr(response, "headers", None)
++    if not headers:
++        return None
++    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
++        raw = headers.get(name)
++        if raw:
++            try:
++                value = float(raw) * scale
++            except ValueError:
++                continue
++            if value > 0:
++                return value
++    return None
++
++
++def is_rate_limit(exc) -> bool:
++    return getattr(exc, "status_code", None) == 429
++
++
++def is_content_filter(exc) -> bool:
++    text = str(exc).lower()
++    return "content management policy" in text or "responsibleaipolicyviolation" in text \
++        or "content_filter" in text
++
++# Stored only when the writer returns nothing usable, or kscope refuses what it returned. The
++# unit's text is still the memory's content, so the lexical and vector channels can find it; the
++# one fact says nothing about the content because nothing extracted it. Always counted.
++FALLBACK_DELTA = {"facts": [{"subject": "this record", "predicate": "instance_of",
++                             "object": "unstructured text record"}]}
++
++
++# `propose[].many` spells a yes/no question. Only an unambiguous word becomes a boolean.
++TRUE_WORDS = {"true", "yes", "y", "1"}
++FALSE_WORDS = {"false", "no", "n", "0"}
++
++
++def _sha(text: str) -> str:
++    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
++
++
++def tree_sha(root: Path) -> str:
++    """sha256 over every file under `root` (relative path and bytes, sorted): the seal of a vault.
++    Any write -- including the exposure row every search appends -- changes it."""
++    digest = hashlib.sha256()
++    root = Path(root)
++    for path in sorted(p for p in root.rglob("*") if p.is_file()):
++        digest.update(str(path.relative_to(root)).encode("utf-8"))
++        digest.update(b"\0")
++        digest.update(path.read_bytes())
++        digest.update(b"\0")
++    return digest.hexdigest()
++
++
++def coerce_propose(delta: dict) -> tuple[dict, dict]:
++    """Make the writer's `propose` block satisfy the store's TYPES, changing no meaning.
++
++    `remember` refuses a whole item when one proposal has the wrong shape, and a refusal costs the
++    unit every triple it had -- the adapter can only resend it with the minimal fallback delta.
++    Every refusal of both 6k runs was this defect and nothing else: `expected a sequence` where
++    `propose[].from`/`to` were sent as a bare string, `expected a boolean` where `propose[].many`
++    was sent as a string. The contract calls `from`/`to` "the declared domain/range KINDS" and
++    `many` "whether one subject may hold several objects at once"; the binary's refusal names the
++    type it wanted. The writer sends scalars.
++
++    So a scalar domain or range becomes a one-element sequence -- the same kind, nothing added,
++    nothing split -- and a `many` that spells an unambiguous yes or no becomes that boolean. A
++    `many` that spells no truth value has no meaning to preserve, and inventing one would be a
++    claim about what may collide on the slot key, so that proposal is DROPPED and counted, never
++    guessed. Facts that used its predicate are unaffected: the contract accepts new predicates.
++
++    Types only. No entity name is normalised, no predicate is written, nothing is added.
++
++    common/writer.py now carries its own `coerce_propose` inside `to_item`, so a delta is coerced
++    here and then again there. Both are idempotent on their own output (a list stays a list, a
++    bool stays a bool, a dropped entry is gone), and the second pass changes nothing; the run's
++    checker verifies that on every unit by re-applying both functions to the logged delta.
++    """
++    stats = {"wrapped": 0, "booleanised": 0, "dropped": 0}
++    proposals = delta.get("propose")
++    if not isinstance(proposals, list) or not proposals:
++        return delta, stats
++    kept = []
++    for entry in proposals:
++        if not isinstance(entry, dict):
++            stats["dropped"] += 1
++            continue
++        entry = dict(entry)
++        for field in ("from", "to"):
++            if isinstance(entry.get(field), str):
++                entry[field] = [entry[field]]
++                stats["wrapped"] += 1
++        many = entry.get("many")
++        if isinstance(many, bool):
++            pass
++        elif isinstance(many, str) and many.strip().lower() in TRUE_WORDS | FALSE_WORDS:
++            entry["many"] = many.strip().lower() in TRUE_WORDS
++            stats["booleanised"] += 1
++        else:
++            stats["dropped"] += 1  # no truth value to read; guessing one would invent a claim
++            continue
++        kept.append(entry)
++    coerced = dict(delta)
++    if kept:
++        coerced["propose"] = kept
++    else:
++        coerced.pop("propose", None)
++    return coerced, stats
++
++
++def split_units(chunk: str, tokenizer, budget: int, max_sentences: int) -> tuple[list[str], dict]:
++    """Cut a chunk into units: consecutive sentences, at most `max_sentences` sentences or
++    `budget` tokens, whichever comes first.
++
++    Domain-independent. Sentences come from the same NLTK punkt tokenizer the harness chunks
++    with. A sentence with no letter in it (a bare list marker such as "12.") is not a sentence,
++    so it is kept with the sentence that follows it rather than allowed to end a unit, and it
++    does not spend one of the `max_sentences`. Every unit is a verbatim slice of the chunk; a
++    single sentence over budget becomes its own unit (never truncated, never dropped).
++
++    The sentence cap is arithmetic, not tuning. `remember` caps a memory at 32 entities and 32
++    facts, and a fact needs two entity endpoints, so 32 / 2 = 16 facts is the most a memory can
++    declare fully. A unit the token budget alone allows can carry more facts than that, and the
++    writer then leaves the excess in prose, where the read path's similarity floor cuts it.
++    """
++    try:
++        from nltk.tokenize import PunktTokenizer
++        spans = list(PunktTokenizer("english").span_tokenize(chunk))
++    except ImportError:  # nltk < 3.9 ships the pickled model instead
++        import nltk
++        spans = list(nltk.data.load("tokenizers/punkt/english.pickle").span_tokenize(chunk))
++
++    pieces: list[tuple[int, int]] = []
++    pending_start = None
++    glued = 0
++    for start, end in spans:
++        if pending_start is not None:
++            start, pending_start = pending_start, None
++        if not any(ch.isalpha() for ch in chunk[start:end]):
++            pending_start = start  # carry the marker forward into the next sentence
++            glued += 1
++            continue
++        pieces.append((start, end))
++    if pending_start is not None:  # a trailing marker has nothing after it: it ends the last piece
++        if pieces:
++            pieces[-1] = (pieces[-1][0], spans[-1][1])
++        else:
++            pieces.append((pending_start, spans[-1][1]))
++
++    def tokens(start: int, end: int) -> int:
++        return len(tokenizer.encode(chunk[start:end], disallowed_special=()))
++
++    units: list[tuple[int, int]] = []
++    sentences_in: list[int] = []
++    for start, end in pieces:
++        if units and sentences_in[-1] < max_sentences and tokens(units[-1][0], end) <= budget:
++            units[-1] = (units[-1][0], end)
++            sentences_in[-1] += 1
++        else:
++            units.append((start, end))
++            sentences_in.append(1)
++    texts = [chunk[start:end] for start, end in units]
++
++    # Nothing dropped and nothing invented: the units carry exactly the chunk's non-space characters.
++    if "".join("".join(texts).split()) != "".join(chunk.split()):
++        raise RuntimeError("unit split lost or invented text")
++    stats = {"sentences": len(spans), "markers_glued": glued, "units": len(texts),
++             "max_sentences": max_sentences, "unit_sentences": sentences_in,
++             "unit_tokens": [tokens(start, end) for start, end in units]}
++    return texts, stats
++
++
++# ── LLM calls that leave a row behind when they raise ──────────────────────────────────────────
++
++def _record_failed_call(role: str, tag: str, seconds: float, exc: BaseException, attempt: int) -> dict:
++    """A call that raised writes a zero-cost row (`failed: true`) to the spend ledger, in the row
++    shape every reader of the ledger already parses, and the same row to logs/mab_llm_failures.jsonl."""
++    row = {
++        "ts": round(time.time(), 3), "scope": os.environ.get("BENCH_SCOPE", "unscoped"),
++        "role": role, "tag": tag, "model_asked": llm.DEPLOYMENT, "model_served": None,
++        "effort": "high", "temperature_sent": False, "in": 0, "out": 0, "reasoning": 0,
++        "finish": "error:" + type(exc).__name__, "ms": int(seconds * 1000), "est_usd": 0.0,
++        "price_assumed": [llm.PRICE_IN, llm.PRICE_OUT], "failed": True,
++        "error": type(exc).__name__ + ": " + str(exc)[:300], "attempt": attempt,
++    }
++    try:
++        with llm._locked():
++            with open(llm.LEDGER, "a") as handle:
++                handle.write(json.dumps(row) + "\n")
++        FAILURES_LOG.parent.mkdir(parents=True, exist_ok=True)
++        with open(FAILURES_LOG, "a") as handle:
++            handle.write(json.dumps(row) + "\n")
++    except Exception:  # failing to log a failure must not replace the real error
++        pass
++    return row
++
++
++def _call_recorded(function, *, role: str, tag: str):
++    """Run `function()`; on an exception other than BudgetExceeded, record it, back off, retry.
++    Returns (result, failures) or raises the last exception after the final attempt."""
++    failures: list[dict] = []
++    for attempt, backoff in enumerate(RETRY_BACKOFF_SECONDS, start=1):
++        started = time.time()
++        try:
++            return function(), failures
++        except llm.BudgetExceeded:
++            raise  # the cap is never retried and never caught
++        except (KeyboardInterrupt, SystemExit):
++            raise
++        except Exception as exc:
++            failures.append(_record_failed_call(role, tag, time.time() - started, exc, attempt))
++            if attempt == len(RETRY_BACKOFF_SECONDS):
++                raise
++            time.sleep(backoff)
++    raise RuntimeError("unreachable")
++
++
++def _call_recorded_rate_aware(function, *, role: str, tag: str):
++    """`_call_recorded`, plus: a 429 gets its own long schedule and does not consume one of the
++    ordinary attempts. Used by the full_context reader only. Returns (result, failures)."""
++    failures: list[dict] = []
++    attempt = 0        # ordinary errors
++    rate_attempt = 0   # 429s
++    while True:
++        started = time.time()
++        try:
++            return function(), failures
++        except llm.BudgetExceeded:
++            raise
++        except (KeyboardInterrupt, SystemExit):
++            raise
++        except Exception as exc:
++            row = _record_failed_call(role, tag, time.time() - started, exc, attempt + rate_attempt + 1)
++            row["rate_limited"] = is_rate_limit(exc)
++            failures.append(row)
++            if is_rate_limit(exc):
++                if rate_attempt >= len(RATE_BACKOFF_SECONDS) - 1:
++                    raise
++                wait = max(RATE_BACKOFF_SECONDS[rate_attempt], _retry_after_seconds(exc) or 0.0)
++                rate_attempt += 1
++                time.sleep(wait)
++                continue
++            if attempt >= len(RETRY_BACKOFF_SECONDS) - 1:
++                raise
++            time.sleep(RETRY_BACKOFF_SECONDS[attempt])
++            attempt += 1
++
++
++def extract_recorded(unit: str, *, tag: str) -> tuple[dict | None, dict]:
++    """common/writer.py's `extract`, with every raised call recorded and retried. If the last
++    attempt still raises, the unit is an extraction failure (`writer_error` names the exception)."""
++    try:
++        (delta, stats), failures = _call_recorded(lambda: writer.extract(unit, tag=tag), role="writer", tag=tag)
++    except llm.BudgetExceeded:
++        raise
++    except Exception as exc:
++        stats = {"attempts": 0, "parse_failures": 0, "clamped": {}, "prompt_sha": writer.prompt_sha(),
++                 "writer_error": type(exc).__name__ + ": " + str(exc)[:300],
++                 "call_failures": len(RETRY_BACKOFF_SECONDS)}
++        return None, stats
++    stats["call_failures"] = len(failures)
++    return delta, stats
++
++
++class KscopeAdapter:
++    def __init__(self, *, writer_mode: str, sub_dataset: str, run_id: str, top_k: int,
++                 maximum_context_bytes: int, unit_tokens: int, unit_sentences: int,
++                 reader_max_completion_tokens: int,
++                 generation_max_length: int, profile: str, agent_save_folder: str, tokenizer,
++                 writer_workers: int = 1, master_manifest: str | None = None,
++                 vault_role: str | None = None):
++        if writer_mode not in WRITERS:
++            raise ValueError(f"kscope_writer must be one of {WRITERS}, got {writer_mode!r}")
++        if os.path.exists(agent_save_folder):
++            raise RuntimeError(
++                f"agent save folder exists: {agent_save_folder!r}. The harness would skip ingestion "
++                "silently and --force does not help. Nothing of ours writes there; remove it by hand.")
++        self.writer_mode = writer_mode
++        self.sub_dataset = sub_dataset
++        self.run_id = run_id
++        self.top_k = top_k
++        self.maximum_context_bytes = maximum_context_bytes
++        self.unit_tokens = unit_tokens
++        self.unit_sentences = unit_sentences
++        self.reader_max_completion_tokens = reader_max_completion_tokens
++        self.generation_max_length = generation_max_length
++        self.tokenizer = tokenizer
++        self.writer_workers = max(1, int(writer_workers))
++        self.instance = uuid.uuid4().hex
++        self.log_path = BENCH_ROOT / "logs" / f"mab_adapter-{run_id}{os.environ.get('MAB_LOG_SUFFIX', '')}.jsonl"
++        self.manifest = None
++        self.master_root = None
++        self.unit_memory: dict[tuple[int, int], str] = {}  # (chunk, unit) -> memory id, for the manifest
++        self.units_by_chunk: list[list[str]] = []          # bm25_units: the corpus, in ingestion order
++        self.bm25 = None
++        # full_context: the memory block is the WHOLE corpus and is identical for every question of
++        # a row, so it is measured once -- and every later question re-checks its sha256, which is
++        # the assertion that the arm really did send the same full corpus each time.
++        self.fc_block_sha: str | None = None
++        self.fc_block_tokens: int | None = None
++
++        root = kscope_io.VAULTS / "mab" / run_id / (vault_role or writer_mode) / f"{sub_dataset}-{self.instance}"
++        for forbidden in (HARNESS_ROOT / "agents", HARNESS_ROOT / "outputs"):
++            if forbidden.resolve() in root.resolve().parents:
++                raise RuntimeError(f"vault root under the harness tree: {root}")
++        if master_manifest:
++            self.manifest = json.loads(Path(master_manifest).read_text())
++            self.master_root = Path(self.manifest["vault"]["root"])
++            if self.manifest["unit_rule"] != {"unit_tokens": unit_tokens, "unit_sentences": unit_sentences}:
++                raise RuntimeError(f"master was cut under {self.manifest['unit_rule']}, this run asks for "
++                                   f"{unit_tokens}/{unit_sentences}")
++        if writer_mode == "kscope" and master_manifest:
++            self.vault = self._clone_master(root, profile)
++        elif writer_mode == "bm25_units":
++            self.vault = None  # no store: the index is built in memory from the units at the first question
++        elif writer_mode == "full_context":
++            self.vault = None  # no store at all: the corpus goes into the prompt
++        else:
++            self.vault = kscope_io.Vault.create(root, profile=profile)
++
++        self.counters = {"chunks_in": 0, "units": 0, "accepted": 0, "refused_first_try": 0,
++                         "fallback_resends": 0, "lost_units": 0, "extraction_failures": 0,
++                         "writer_errors": 0, "writer_call_failures": 0,
++                         "writer_attempts": 0, "writer_parse_failures": 0, "clamped_units": 0,
++                         "batch_call_failures": 0, "minted_over_budget_batches": 0,
++                         "propose_coerced_units": 0, "propose_dropped_entries": 0,
++                         "questions": 0, "truncated_answers": 0, "empty_answers": 0,
++                         "reader_errors": 0, "reader_call_failures": 0,
++                         "chunks_verified_against_master": 0, "units_verified_against_master": 0,
++                         "rate_limited_calls": 0, "content_filter_calls": 0,
++                         "pace_wait_seconds": 0.0, "cached_prompt_tokens": 0, "prompt_tokens": 0}
++        self.prompt_shas: set[str] = set()
++        self.ingest_seconds = 0.0
++        self.ingest_time_reported = False
++        self.first_question_ts = None
++        self._log("init", vault=str(self.vault.root) if self.vault else None, profile=profile, top_k=top_k,
++                  maximum_context_bytes=maximum_context_bytes, unit_tokens=unit_tokens,
++                  unit_sentences=unit_sentences,
++                  reader_max_completion_tokens=reader_max_completion_tokens,
++                  generation_max_length=generation_max_length, agent_save_folder=agent_save_folder,
++                  writer_prompt_sha=writer.prompt_sha() if writer_mode == "kscope" else None,
++                  writer_workers=self.writer_workers, master_manifest=master_manifest,
++                  master_root=str(self.master_root) if self.master_root else None,
++                  master_seal=self.manifest["seal"] if self.manifest else None,
++                  kscope_sha256=(kscope_io.check_binary()["sha256"]
++                                 if writer_mode not in ("bm25_units", "full_context") else None),
++                  deployment=llm.DEPLOYMENT, temperature_sent=False,
++                  llm_timeout=os.environ.get("BENCH_LLM_TIMEOUT"))
++
++    def _clone_master(self, root: Path, profile: str):
++        """Copy-on-write clone of the sealed master, verified on both sides of the copy."""
++        master = self.master_root
++        kscope_io.assert_root(master)
++        root = kscope_io.assert_root(root)
++        if root.exists():
++            raise kscope_io.IsolationError(f"clone root already exists, refusing to reuse it: {root}")
++        binary = kscope_io.check_binary()
++        if binary["sha256"] != self.manifest["kscope"]["sha256"]:
++            raise RuntimeError(f"kscope binary {binary['sha256'][:16]} is not the one that built the master "
++                               f"({self.manifest['kscope']['sha256'][:16]})")
++        seal_now = tree_sha(master)
++        if seal_now != self.manifest["seal"]:
++            raise RuntimeError(f"master vault {master} changed since it was sealed: {seal_now[:16]} != "
++                               f"{self.manifest['seal'][:16]} -- it was searched or written; refusing to clone")
++        root.parent.mkdir(parents=True, exist_ok=True)
++        started = time.time()
++        subprocess.run(["cp", "-Rc", str(master), str(root)], check=True, capture_output=True)
++        clone_seal = tree_sha(root)
++        if clone_seal != self.manifest["seal"]:
++            raise RuntimeError("clone does not carry the master's seal")
++        identity = dict(self.manifest["vault"]["identity"])
++        identity["root"] = str(root)
++        identity["cloned_from"] = str(master)
++        (root.parent / f"{root.name}-identity.json").write_text(json.dumps(identity))
++        kscope_io._log({"ts": started, "op": "clone", "root": str(root), "rc": 0,
++                        "ms": int((time.time() - started) * 1000), "profile": profile,
++                        "cloned_from": str(master), "seal": clone_seal})
++        return kscope_io.Vault(root, identity["workspace_id"], identity["principal_id"], identity["journal"], profile)
++
++    def _log(self, event: str, **fields) -> None:
++        row = {"ts": round(time.time(), 3), "event": event, "run_id": self.run_id,
++               "writer": self.writer_mode, "sub_dataset": self.sub_dataset,
++               "instance": self.instance, **fields}
++        self.log_path.parent.mkdir(parents=True, exist_ok=True)
++        with open(self.log_path, "a") as handle:
++            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
++
++    # ── ingestion ────────────────────────────────────────────────────────────────────────────
++    def ingest(self, chunk: str) -> None:
++        if self.first_question_ts is not None:
++            raise RuntimeError("ingest called after a question was seen: a write with a question in scope is a leak")
++        started = time.time()
++        chunk_index = self.counters["chunks_in"]
++        self.counters["chunks_in"] += 1
++        chunk_tokens = len(self.tokenizer.encode(chunk, disallowed_special=()))
++        if self.writer_mode == "none":
++            self._log("ingest_chunk", chunk_index=chunk_index, chunk_sha=_sha(chunk),
++                      chunk_tokens=chunk_tokens, units=0, stored=False)
++            self.ingest_seconds += time.time() - started
++            return
++
++        units, split_stats = split_units(chunk, self.tokenizer, self.unit_tokens, self.unit_sentences)
++
++        if self.manifest is not None:
++            # Clone mode (kscope) or reference mode (bm25_units): the chunk, and every unit cut from
++            # it, must be byte-identical to what the master was built from. Any difference is a
++            # different corpus and the run stops here.
++            self._verify_against_master(chunk_index, chunk, units)
++        if self.writer_mode in ("bm25_units", "full_context"):
++            self.units_by_chunk.append(units)
++            self.counters["units"] += len(units)
++            self.ingest_seconds += time.time() - started
++            self._log("ingest_chunk", chunk_index=chunk_index, chunk_sha=_sha(chunk), chunk_tokens=chunk_tokens,
++                      stored=True, store=("bm25" if self.writer_mode == "bm25_units" else "prompt"),
++                      seconds=round(time.time() - started, 3), **split_stats)
++            return
++        if self.manifest is not None:
++            expected = self.manifest["chunks"][chunk_index]["units"]
++            self.counters["units"] += len(units)
++            self.counters["accepted"] += sum(1 for u in expected if u.get("memory_id"))
++            self.counters["lost_units"] += sum(1 for u in expected if not u.get("memory_id"))
++            self.ingest_seconds += time.time() - started
++            self._log("ingest_chunk", chunk_index=chunk_index, chunk_sha=_sha(chunk), chunk_tokens=chunk_tokens,
++                      stored=True, store="clone", seconds=round(time.time() - started, 3), **split_stats)
++            return
++
++        def tag_of(unit_index: int) -> str:
++            return f"mab:{self.run_id}:c{chunk_index}:u{unit_index}"
++
++        # The writer sees the unit text and nothing else. Calls may overlap in time (each is an
++        # independent function of its unit); results are consumed, and written, in unit order.
++        with ThreadPoolExecutor(max_workers=self.writer_workers) as pool:
++            extracted = list(pool.map(lambda pair: extract_recorded(pair[1], tag=tag_of(pair[0])), enumerate(units)))
++        items = []
++        for unit_index, (unit, (delta, stats)) in enumerate(zip(units, extracted)):
++            tag = tag_of(unit_index)
++            self.counters["units"] += 1
++            self.counters["writer_attempts"] += stats["attempts"]
++            self.counters["writer_parse_failures"] += stats["parse_failures"]
++            self.counters["writer_call_failures"] += stats.get("call_failures", 0)
++            self.prompt_shas.add(stats["prompt_sha"])
++            if stats["clamped"]:
++                self.counters["clamped_units"] += 1
++            fallback = delta is None
++            if fallback:
++                self.counters["extraction_failures"] += 1
++                if stats.get("writer_error"):
++                    self.counters["writer_errors"] += 1
++                delta = FALLBACK_DELTA
++            delta, propose_stats = coerce_propose(delta)
++            if any(propose_stats.values()):
++                self.counters["propose_coerced_units"] += 1
++                self.counters["propose_dropped_entries"] += propose_stats["dropped"]
++            items.append((unit_index, unit, writer.to_item(unit, delta)))
++            self._log("unit", chunk_index=chunk_index, unit_index=unit_index, unit_sha=_sha(unit),
++                      propose_coerced=propose_stats,
++                      unit_tokens=split_stats["unit_tokens"][unit_index],
++                      unit_sentences=split_stats["unit_sentences"][unit_index], unit_text=unit, tag=tag,
++                      writer_attempts=stats["attempts"], parse_failures=stats["parse_failures"],
++                      call_failures=stats.get("call_failures", 0), writer_error=stats.get("writer_error"),
++                      clamped=stats["clamped"], prompt_sha=stats["prompt_sha"], extraction_failed=fallback,
++                      facts=len(delta.get("facts") or []), entities=len(delta.get("entities") or []),
++                      proposals=len(delta.get("propose") or []), memory_type=delta.get("memory_type"),
++                      title=delta.get("title"),
++                      delta_facts=[[fact.get("subject"), fact.get("predicate"), fact.get("object")]
++                                   for fact in (delta.get("facts") or []) if isinstance(fact, dict)],
++                      delta_propose=delta.get("propose"))
++        for offset in range(0, len(items), REMEMBER_BATCH):
++            self._write_batch(chunk_index, items[offset:offset + REMEMBER_BATCH])
++        self.ingest_seconds += time.time() - started
++        self._log("ingest_chunk", chunk_index=chunk_index, chunk_sha=_sha(chunk), chunk_tokens=chunk_tokens,
++                  stored=True, store="vault", seconds=round(time.time() - started, 3), **split_stats)
++
++    def _verify_against_master(self, chunk_index: int, chunk: str, units: list[str]) -> None:
++        chunks = self.manifest["chunks"]
++        if chunk_index >= len(chunks):
++            raise RuntimeError(f"the harness handed over chunk {chunk_index} but the master has {len(chunks)}")
++        expected = chunks[chunk_index]
++        if expected["sha"] != _sha(chunk):
++            raise RuntimeError(f"chunk {chunk_index} differs from the master's ({_sha(chunk)} != {expected['sha']})")
++        got = [_sha(u) for u in units]
++        want = [u["sha"] for u in expected["units"]]
++        if got != want:
++            raise RuntimeError(f"chunk {chunk_index}: the units cut here differ from the master's "
++                               f"({len(got)} vs {len(want)} units)")
++        self.counters["chunks_verified_against_master"] += 1
++        self.counters["units_verified_against_master"] += len(units)
++
++    def _write_batch(self, chunk_index: int, batch: list) -> None:
++        rc, body, err = self.vault.remember_items([item for _, _, item in batch])
++        results = (body or {}).get("results")
++        if not isinstance(results, list) or len(results) != len(batch):
++            # The call failed as a whole (no per-item report): nothing in it may have been written.
++            self.counters["batch_call_failures"] += 1
++            self._log("remember_batch", chunk_index=chunk_index, rc=rc, whole_call_failure=True,
++                      items=len(batch), body=json.dumps(body)[:600], stderr=(err or "")[:300])
++            if len(batch) == 1:
++                self._resend_with_fallback(chunk_index, batch[0], reason=f"call failed rc={rc}: {(err or '')[:200]}")
++            else:
++                for entry in batch:  # isolate the item that broke the call
++                    self._write_batch(chunk_index, [entry])
++            return
++        if body.get("minted_over_budget"):
++            self.counters["minted_over_budget_batches"] += 1
++        self._log("remember_batch", chunk_index=chunk_index, rc=rc, whole_call_failure=False, items=len(batch),
++                  accepted=body.get("accepted_items"), refused=body.get("refused_items"),
++                  rejected=body.get("rejected_items"), status=body.get("status"),
++                  minted_over_budget=body.get("minted_over_budget"), graph_fold_total=body.get("graph_fold_total"),
++                  results=[{"unit_index": unit_index, "status": result.get("status"),
++                            "memory_id": result.get("memory_id"), "canonical_effect": result.get("canonical_effect"),
++                            "reason": result.get("reason")}
++                           for (unit_index, _, _), result in zip(batch, results)])
++        for entry, result in zip(batch, results):
++            if result.get("status") == "created":
++                self.counters["accepted"] += 1
++                self.unit_memory[(chunk_index, entry[0])] = result.get("memory_id")
++            else:
++                self.counters["refused_first_try"] += 1
++                self._resend_with_fallback(chunk_index, entry, reason=str(result.get("reason"))[:300])
++
++    def _resend_with_fallback(self, chunk_index: int, entry, reason: str) -> None:
++        """kscope refused the writer's delta. The unit must not vanish silently: store it verbatim
++        with the minimal fallback delta, once, and count it. A second refusal is a lost unit."""
++        unit_index, unit, _ = entry
++        self.counters["fallback_resends"] += 1
++        rc, body, err = self.vault.remember_items([writer.to_item(unit, FALLBACK_DELTA)])
++        results = (body or {}).get("results") or [{}]
++        stored = results[0].get("status") == "created"
++        if stored:
++            self.counters["accepted"] += 1
++            self.unit_memory[(chunk_index, unit_index)] = results[0].get("memory_id")
++        else:
++            self.counters["lost_units"] += 1
++        self._log("fallback_resend", chunk_index=chunk_index, unit_index=unit_index, unit_sha=_sha(unit),
++                  first_refusal=reason, rc=rc, stored=stored, memory_id=results[0].get("memory_id"),
++                  second_refusal=None if stored else (results[0].get("reason") or (err or "")[:300]))
++
++    # ── answering ────────────────────────────────────────────────────────────────────────────
++    def answer(self, agent, message: str, query_id, context_id) -> dict:
++        if self.first_question_ts is None:
++            self.first_question_ts = time.time()
++            if self.manifest is not None and self.counters["chunks_in"] != len(self.manifest["chunks"]):
++                raise RuntimeError(f"the harness handed over {self.counters['chunks_in']} chunks; the master "
++                                   f"holds {len(self.manifest['chunks'])}")
++            self._log("first_question", counters=dict(self.counters), ingest_seconds=round(self.ingest_seconds, 3),
++                      writer_prompt_shas=sorted(self.prompt_shas))
++        if self.counters["chunks_in"] == 0:
++            raise RuntimeError("no chunk was ingested before the first question: the harness skipped ingestion")
++        if self.writer_mode == "full_context":
++            if self.vault is not None:
++                raise RuntimeError("full_context arm holds a vault: this arm must touch no memory system")
++            if self.counters["units"] == 0:
++                raise RuntimeError("full_context arm reached a question with zero units")
++        if self.writer_mode == "kscope":
++            if self.counters["accepted"] == 0:
++                raise RuntimeError("writing arm reached a question with zero accepted memories")
++            if self.manifest is None and len(self.prompt_shas) != 1:
++                raise RuntimeError(f"writer prompt changed inside a run: {sorted(self.prompt_shas)}")
++        self.counters["questions"] += 1
++
++        started = time.time()
++        # Same extraction every retrieve-then-read baseline uses (agent.py `_extract_retrieval_query`).
++        retrieval_query = agent._extract_retrieval_query(message)
++        # kscope refuses control characters in a query ("Text rejects '\n'"), and the harness template
++        # puts a newline before "Answer:". Whitespace runs become single spaces; no word is changed.
++        sent_query = " ".join(retrieval_query.split())
++        if self.writer_mode == "full_context":
++            hits, body, rc = self._all_units(), {}, 0
++        elif self.writer_mode == "bm25_units":
++            hits, body, rc = self._bm25_hits(sent_query), {}, 0
++        else:
++            rc, body, err = self.vault.search(sent_query, top_k=self.top_k,
++                                              maximum_context_bytes=self.maximum_context_bytes)
++            if rc != 0 or not isinstance(body, dict) or "selected_hits" not in body:
++                self._log("search_failed", query_id=query_id, context_id=context_id, rc=rc,
++                          body=json.dumps(body)[:600], stderr=(err or "")[:300], sent_query=sent_query)
++                raise RuntimeError(f"kscope search failed rc={rc}: {(err or json.dumps(body))[:300]}")
++            hits = body["selected_hits"] or []
++            if self.writer_mode == "none" and hits:
++                raise RuntimeError(f"isolation breach: the empty vault of the 'none' arm served {len(hits)} hits")
++        search_seconds = time.time() - started
++
++        # The BM25 baseline's assembly (agent.py `_handle_bm25_rag`), over what was served.
++        retrieval_context = [f"{hit['content_md']}\n" for hit in hits]
++        retrieval_memory_string = "\n".join(f"Memory {i + 1}:\n{text}" for i, text in enumerate(retrieval_context))
++        ask_llm_message = retrieval_memory_string + "\n" + message
++        from utils.eval_data_utils import format_chat
++        from utils.templates import get_template
++        system_message = get_template(agent.sub_dataset, "system", agent.agent_name)
++        messages = format_chat(message=ask_llm_message, system_message=system_message)
++
++        pacing = None
++        prompt_tokens_local = None
++        if self.writer_mode == "full_context":
++            block_sha = _sha(retrieval_memory_string)
++            if self.fc_block_sha is None:
++                self.fc_block_sha = block_sha
++                self.fc_block_tokens = len(self.tokenizer.encode(retrieval_memory_string,
++                                                                 disallowed_special=()))
++            elif block_sha != self.fc_block_sha:
++                raise RuntimeError("the full_context memory block changed between questions: this arm "
++                                   f"must send the whole corpus every time ({block_sha} != {self.fc_block_sha})")
++            # One tokenizer pass over 1.1 MB per question, not three: the pacer's estimate IS the
++            # recorded prompt length.
++            prompt_tokens_local = len(self.tokenizer.encode(ask_llm_message, disallowed_special=()))
++            # The prompt is ~296k tokens against a 500k/min ceiling shared with another benchmark.
++            pacing = pace_for(prompt_tokens_local + self.reader_max_completion_tokens)
++            self.counters["pace_wait_seconds"] += pacing["waited_seconds"]
++        reader_started = time.time()
++        if self.writer_mode == "full_context":
++            output, raw, usage, truncated = read_answer_full_context(
++                messages, tokenizer=self.tokenizer, generation_max_length=self.generation_max_length,
++                max_completion_tokens=self.reader_max_completion_tokens,
++                tag=f"mab:{self.run_id}:{self.writer_mode}:q{query_id}",
++                pacing_tokens=(prompt_tokens_local or 0) + self.reader_max_completion_tokens)
++        else:
++            output, raw, usage, truncated = read_answer(
++                messages, tokenizer=self.tokenizer, generation_max_length=self.generation_max_length,
++                max_completion_tokens=self.reader_max_completion_tokens,
++                tag=f"mab:{self.run_id}:{self.writer_mode}:q{query_id}")
++        query_seconds = time.time() - reader_started
++        self.counters["rate_limited_calls"] += usage.get("rate_limited_attempts", 0)
++        self.counters["content_filter_calls"] += int(bool(usage.get("content_filter")))
++        self.counters["cached_prompt_tokens"] += usage.get("cached") or 0
++        self.counters["prompt_tokens"] += usage.get("in") or 0
++        self.counters["truncated_answers"] += int(truncated)
++        self.counters["empty_answers"] += int(not raw.strip())
++        reader_error = usage.get("failed", False)
++        self.counters["reader_errors"] += int(reader_error)
++        self.counters["reader_call_failures"] += usage.get("call_failures", 0)
++
++        # The harness averages this per query. As with its own memory agents, the first answered
++        # query carries the construction cost (measured during ingestion); every query carries its search.
++        memory_construction_time = search_seconds
++        if not self.ingest_time_reported:
++            memory_construction_time += self.ingest_seconds
++            self.ingest_time_reported = True
++
++        self._log("question", query_id=query_id, context_id=context_id, message_sha=_sha(message),
++                  retrieval_query=retrieval_query, sent_query=sent_query,
++                  query_chars=len(sent_query), query_tokens=len(self.tokenizer.encode(sent_query, disallowed_special=())),
++                  search_rc=rc, served=len(hits), omitted_hits=body.get("omitted_hits"),
++                  omissions=body.get("omissions"), stop_reason=body.get("stop_reason"),
++                  abstained=(body.get("abstention") or {}).get("abstained"), abstention=body.get("abstention"),
++                  served_floor=body.get("served_floor"), context_bytes=body.get("context_bytes"),
++                  exposure_id=body.get("exposure_id"),
++                  served_hits=([] if self.writer_mode == "full_context" else
++                               [{"rank": i + 1, "memory_id": hit.get("memory_id"), "sequence": hit.get("sequence"),
++                                 "unit_key": hit.get("unit_key"), "bm25_score": hit.get("bm25_score"),
++                                 "content_sha": _sha(hit["content_md"]), "content_md": hit["content_md"]}
++                                for i, hit in enumerate(hits)]),
++                  memory_block_sha=self.fc_block_sha, memory_block_tokens=self.fc_block_tokens,
++                  prompt_tokens_local=prompt_tokens_local,
++                  pacing=pacing, reader_cached=usage.get("cached"),
++                  rate_limited_attempts=usage.get("rate_limited_attempts", 0),
++                  content_filter=usage.get("content_filter", False),
++                  reader_in=usage["in"], reader_out=usage["out"], reader_reasoning=usage.get("reasoning"),
++                  reader_finish=usage.get("finish"), reader_ms=usage.get("ms"), model_served=usage.get("model_served"),
++                  temperature_sent=usage.get("temperature_sent"), raw_output=raw, output=output, truncated=truncated,
++                  reader_error=reader_error, reader_call_failures=usage.get("call_failures", 0),
++                  reader_error_text=usage.get("error"),
++                  raw_output_tokens=len(self.tokenizer.encode(raw, disallowed_special=())),
++                  search_seconds=round(search_seconds, 3), query_seconds=round(query_seconds, 3))
++        return agent._create_standard_response(output, usage["in"], usage["out"],
++                                               memory_construction_time, query_seconds)
++
++    def _all_units(self) -> list[dict]:
++        """Every unit, in the benchmark's own order (chunk order, then unit order inside a chunk)
++        -- the same order the kscope arm wrote them in and the same units bm25_units indexes.
++        No query is consulted: this arm does not retrieve."""
++        if not self.units_by_chunk:
++            raise RuntimeError("full_context arm reached a question with an empty corpus")
++        return [{"memory_id": f"unit:{ci}.{ui}", "unit_key": [ci, ui], "content_md": unit}
++                for ci, units in enumerate(self.units_by_chunk) for ui, unit in enumerate(units)]
++
++    def _bm25_hits(self, sent_query: str) -> list[dict]:
++        """Top-k units by BM25Okapi over whitespace tokens: the harness's own Simple_rag_bm25 retriever
++        (langchain BM25Retriever = rank_bm25.BM25Okapi with `str.split`), built over the units instead
++        of the 4096-token chunks. Case-sensitive, punctuation attached, exactly as the baseline runs."""
++        if self.bm25 is None:
++            from rank_bm25 import BM25Okapi
++            self.bm25_units = [(ci, ui, unit) for ci, units in enumerate(self.units_by_chunk) for ui, unit in enumerate(units)]
++            if not self.bm25_units:
++                raise RuntimeError("bm25_units arm reached a question with an empty corpus")
++            started = time.time()
++            self.bm25 = BM25Okapi([unit.split() for _, _, unit in self.bm25_units])
++            self._log("bm25_index", units=len(self.bm25_units), seconds=round(time.time() - started, 3),
++                      tokenizer="str.split", k1=1.5, b=0.75, epsilon=0.25)
++        import numpy as np
++        scores = self.bm25.get_scores(sent_query.split())
++        order = np.argsort(scores)[::-1][:self.top_k]
++        return [{"memory_id": f"unit:{self.bm25_units[i][0]}.{self.bm25_units[i][1]}",
++                 "unit_key": [self.bm25_units[i][0], self.bm25_units[i][1]],
++                 "bm25_score": float(scores[i]), "content_md": self.bm25_units[i][2]} for i in order]
++
++
++def read_answer(messages, *, tokenizer, generation_max_length: int, max_completion_tokens: int, tag: str):
++    """The one reader every arm uses. Returns (visible_answer, raw_answer, usage_row, truncated).
++
++    The API budget is generous because reasoning tokens count against it; the dataset's
++    `generation_max_length` is enforced on the visible text instead, by token-prefix truncation.
++    A call that still raises after every recorded retry returns an EMPTY answer with
++    `usage["failed"] = True`, so the harness scores it 0 and the checker reports it apart.
++    """
++    try:
++        (raw, usage), failures = _call_recorded(
++            lambda: llm.chat(messages, role="reader", max_completion_tokens=max_completion_tokens, tag=tag),
++            role="reader", tag=tag)
++    except llm.BudgetExceeded:
++        raise
++    except Exception as exc:
++        usage = {"in": 0, "out": 0, "reasoning": 0, "finish": "error:" + type(exc).__name__, "ms": 0,
++                 "model_served": None, "temperature_sent": False, "failed": True,
++                 "error": type(exc).__name__ + ": " + str(exc)[:300], "call_failures": len(RETRY_BACKOFF_SECONDS)}
++        return "", "", usage, False
++    usage = dict(usage)
++    usage["call_failures"] = len(failures)
++    tokens = tokenizer.encode(raw, disallowed_special=())
++    truncated = len(tokens) > generation_max_length
++    visible = tokenizer.decode(tokens[:generation_max_length]) if truncated else raw
++    return visible, raw, usage, truncated
++
++
++def read_answer_full_context(messages, *, tokenizer, generation_max_length: int,
++                             max_completion_tokens: int, tag: str, pacing_tokens: int = 0):
++    """`read_answer` for the full_context arm. Same request, same visible cap, two differences
++    the arm's size forces:
++
++      * the call goes through `llm.create_raw` rather than `llm.chat`, so the RAW response is in
++        hand and `usage.prompt_tokens_details.cached_tokens` can be recorded. The request dict is
++        what `llm.chat` would have built (model pinned by the door, effort high,
++        max_completion_tokens, no temperature), so the reader is asked exactly the same thing --
++        but a 295k-token prompt repeated 100 times is mostly a cached prefix, and input billed at
++        the cached rate is a tenth of input billed fresh. A cost reported without that number is
++        wrong by up to 10x, in the arm whose whole point is cost.
++      * retries are rate-aware: a 429 is the limiter, not a failure.
++
++    Returns (visible_answer, raw_answer, usage_row, truncated), with the same failure contract as
++    `read_answer`: a call that still raises after every attempt yields an EMPTY answer and
++    `usage["failed"] = True`, so the harness scores it 0 and the checker reports it apart.
++    """
++    request = {"messages": messages, "reasoning_effort": "high",
++               "max_completion_tokens": max_completion_tokens}
++
++    def send():
++        note_own_call(time.time(), pacing_tokens)
++        return llm.create_raw(dict(request), role="reader", tag=tag)
++
++    try:
++        response, failures = _call_recorded_rate_aware(send, role="reader", tag=tag)
++    except llm.BudgetExceeded:
++        raise
++    except Exception as exc:
++        usage = {"in": 0, "out": 0, "reasoning": 0, "finish": "error:" + type(exc).__name__, "ms": 0,
++                 "model_served": None, "temperature_sent": False, "failed": True,
++                 "error": type(exc).__name__ + ": " + str(exc)[:300],
++                 "call_failures": 1, "cached": 0, "rate_limited_attempts": 0,
++                 "content_filter": is_content_filter(exc)}
++        return "", "", usage, False
++    api_usage = response.usage
++    details = getattr(api_usage, "completion_tokens_details", None)
++    prompt_details = getattr(api_usage, "prompt_tokens_details", None)
++    finish = response.choices[0].finish_reason
++    usage = {
++        "in": api_usage.prompt_tokens, "out": api_usage.completion_tokens,
++        "reasoning": getattr(details, "reasoning_tokens", None) if details else None,
++        "cached": getattr(prompt_details, "cached_tokens", None) if prompt_details else None,
++        "finish": finish, "ms": None, "model_served": getattr(response, "model", None),
++        "temperature_sent": False, "failed": False,
++        "call_failures": len(failures),
++        "rate_limited_attempts": sum(1 for f in failures if f.get("rate_limited")),
++        "content_filter": finish == "content_filter",
++    }
++    raw = response.choices[0].message.content or ""
++    tokens = tokenizer.encode(raw, disallowed_special=())
++    truncated = len(tokens) > generation_max_length
++    visible = tokenizer.decode(tokens[:generation_max_length]) if truncated else raw
++    return visible, raw, usage, truncated
++
++
++# ── the two entry points agent.py delegates to ───────────────────────────────────────────────
++
++def initialize_kscope_agent(agent, agent_config, dataset_config) -> None:
++    run_id = os.environ.get("MAB_RUN_ID")
++    if not run_id:
++        raise RuntimeError("MAB_RUN_ID is not set: a run without an id cannot name its vaults or its log")
++    if not os.environ.get("BENCH_SCOPE") or not os.environ.get("BENCH_SCOPE_CAP_USD"):
++        raise RuntimeError("BENCH_SCOPE and BENCH_SCOPE_CAP_USD must be set before any LLM call can happen")
++    if agent_config["model"] != llm.DEPLOYMENT:
++        raise RuntimeError(f"config model {agent_config['model']!r} is not the deployment common/llm.py pins "
++                           f"({llm.DEPLOYMENT!r}); the results file would name a model that did not answer")
++    agent.retrieve_num = agent_config["retrieve_num"]
++    agent.kscope = KscopeAdapter(
++        writer_mode=agent_config["kscope_writer"],
++        sub_dataset=dataset_config["sub_dataset"],
++        run_id=run_id,
++        top_k=agent_config["retrieve_num"],
++        maximum_context_bytes=agent_config["kscope_maximum_context_bytes"],
++        unit_tokens=agent_config["kscope_unit_tokens"],
++        unit_sentences=agent_config["kscope_unit_sentences"],
++        reader_max_completion_tokens=agent_config["kscope_reader_max_completion_tokens"],
++        generation_max_length=dataset_config["generation_max_length"],
++        profile=agent_config["kscope_profile"],
++        agent_save_folder=agent.agent_save_to_folder,
++        tokenizer=agent.tokenizer,
++        writer_workers=agent_config["kscope_writer_workers"],
++        master_manifest=agent_config.get("kscope_master_manifest"),
++    )
++    print(f"kscope adapter up: writer={agent.kscope.writer_mode} vault={agent.kscope.vault.root if agent.kscope.vault else None}")
++
++
++def handle_kscope_agent(agent, message, memorizing, query_id, context_id):
++    if memorizing:
++        agent.kscope.ingest(message)
++        return "Memorized"
++    return agent.kscope.answer(agent, message, query_id, context_id)

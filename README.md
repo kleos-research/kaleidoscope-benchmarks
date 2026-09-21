@@ -11,7 +11,8 @@ gets measured is what ships.
 
 | Suite | What it measures | Status |
 | --- | --- | --- |
-| **BEAM** | Ten memory abilities over conversations from 100K to 10M tokens | Supported |
+| **[BEAM](kbench/benchmarks/beam/)** | Ten memory abilities over conversations from 100K to 10M tokens | Supported |
+| **[MemoryAgentBench](kbench/benchmarks/memoryagentbench/)** ([paper](https://arxiv.org/abs/2507.05257)) | Answering from a long history whose facts are later overwritten, single- and multi-hop, 6K to 262K tokens | Supported |
 | LongMemEval | Long-horizon question answering | Planned |
 | LoCoMo | Long conversational memory | Planned |
 
@@ -129,6 +130,24 @@ editing the prompt re-pays for what changed and nothing else.
 
 ## Results
 
+### MemoryAgentBench
+
+On FactConsolidation at 262K tokens, with the same reader (GPT-5.6 Luna) in
+every arm:
+
+| | single-hop accuracy | reader tokens per question |
+| --- | --- | --- |
+| entire history in the prompt | 85 | 291,746 |
+| **Kaleidoscope** | **90** | **1,195** |
+| BM25 keyword search | 78 | 2,066 |
+| no memory | 13 | 189 |
+
+Kaleidoscope is more accurate than pasting in the whole history, at 0.4% of the
+tokens. It loses to BM25 on multi-hop questions at every length. Full results,
+per length, with the losses: [docs/memoryagentbench](docs/memoryagentbench/).
+
+### BEAM
+
 Measured numbers for 100K and 1M, per question and per ability, with the
 configuration that produced each row: [docs/beam](docs/beam). Read that
 README's first section before quoting anything from it — the comparison against
@@ -232,6 +251,7 @@ kbench/
     ├── report.py                phase 4
     ├── run.py                   CLI
     └── prompts/                 extraction, reader, judge, tau alignment
+└── benchmarks/memoryagentbench/ adapter for MemoryAgentBench's own harness, and an independent checker
 AGENTS.md                        the memory-writing contract
 CLAUDE.md                        how to work in this repository
 ```
@@ -242,3 +262,6 @@ Apache 2.0.
 
 BEAM is published by its own authors under its own terms and is not redistributed
 here — the harness fetches it. See `kbench/benchmarks/beam/README.md`.
+MemoryAgentBench and its data are likewise its authors' own; this repository
+carries only a patch against their code. See
+`kbench/benchmarks/memoryagentbench/README.md`.

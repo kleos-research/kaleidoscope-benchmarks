@@ -8,17 +8,21 @@ at two conversation tiers and two retrieval depths.
 **The reader and judge are not the same model mem0 published with.** These runs
 use `openai-gpt-56-luna` at `reasoning_effort=xhigh`; mem0's published BEAM
 results use `gpt-5` for both. A reader difference is indistinguishable from a
-memory difference in the final score — [the top-level
-README](../../README.md#configuration) says so about arms within a suite, and it
-is just as true across published runs.
+memory difference in the final score. [The harness
+README](../../kbench/benchmarks/beam/README.md#configuration) says so about runs
+within this repository, and it is just as true across published runs.
 
 So the comparison below is **not** controlled for the reader. It is reported
 because the underlying numbers are public on both sides and someone will make
 the comparison anyway; it is qualified here rather than left to be discovered.
 A same-reader run has not been done.
 
-Two further gaps, both stated rather than adjusted for:
+Three further gaps, all stated rather than adjusted for:
 
+* **The 1M runs are not Kaleidoscope's default configuration.** Only arm B was
+  run at 1M, and arm B turns on four optional retrieval settings that ship
+  turned off (see [Configuration](#configuration)). The default configuration,
+  arm A, was run at 100K only.
 * **Nine abilities, not ten.** `event_ordering` was not run, so no Kendall tau
   was computed. The mem0 columns below are recomputed over the same nine from
   their published per-ability figures, so both sides exclude it — but neither
@@ -97,14 +101,14 @@ Identical across every arm here unless the column says otherwise.
 | judge | `openai-gpt-56-luna`, `reasoning_effort=xhigh`, one call per rubric item |
 | protocol | mem0's answer prompt and nugget judge, so the scores are on their scale |
 | abilities | nine; `event_ordering` not run |
-| arm A | shipped retrieval, no switches |
-| arm B | `csls` + `projected_dedup` + `fan_in` + `order_key=sequence` |
-| arm C | `prf` + `projected_dedup` + `fan_in` + `order_key=sequence` |
+| arm A | Kaleidoscope as shipped, with no optional settings |
+| arm B | as shipped, plus four optional retrieval settings that ship turned off |
+| arm C | as shipped, plus four optional retrieval settings: three shared with arm B, one different |
 
-**Arms B and C are bundles of four switches, all of which ship off.** A
-difference between B and A is not attributable to CSLS alone. At 100K the four
-configurations at two depths span 0.706-0.767, and only one contrast in that
-grid survived a paired test.
+**Arms B and C each turn on four settings that ship turned off**, so neither is
+the default configuration, and a difference between B and A cannot be pinned on
+any one setting. At 100K the three arms at two depths span 0.706–0.767, and only
+one contrast in that grid survived a paired test.
 
 `context_tokens` is the harness's own accounting at BEAM's 3.5 chars/token, not
 a tokenizer's count. It is consistent across arms, which is what a comparison
@@ -148,9 +152,9 @@ Treat the rows as the record of what was measured, not as something this repo
 currently regenerates.
 
 Seeding wrote 74,658 of 75,039 corpus memories at 1M. 82 were refused at write,
-58 of those because a fact named a surface no entity declared; **299 are
-unaccounted for** and were most likely dropped in conversion, which is not
-counted. That is 0.4% of the corpus and a gap in the accounting rather than a
+58 of those because a fact mentioned something the memory did not declare;
+**299 are unaccounted for** and were most likely dropped in conversion, which is
+not counted. That is 0.4% of the corpus and a gap in the accounting rather than a
 threat to the numbers.
 
 Empty answers: 0 of 598 at k=100, 0 of 528 at k=50. One question of 630 at

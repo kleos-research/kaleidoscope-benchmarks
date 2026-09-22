@@ -1,267 +1,167 @@
 # Kaleidoscope Benchmarks
 
-Open-source evaluation suite for [Kaleidoscope](https://memory.kleosresearch.xyz/),
-an offline, filesystem-native memory runtime for AI agents.
+Benchmark harnesses for [Kaleidoscope](https://memory.kleosresearch.xyz/), a
+local memory store for AI agents, and the results they produced.
 
-The harness measures the memory system. It does not reimplement it — `kscope` is
-assumed installed, and every operation shells out to the real binary, so what
-gets measured is what ships.
-
-## Benchmarks
-
-| Suite | What it measures | Status |
-| --- | --- | --- |
-| **[BEAM](kbench/benchmarks/beam/)** | Ten memory abilities over conversations from 100K to 10M tokens | Supported |
-| **[MemoryAgentBench](kbench/benchmarks/memoryagentbench/)** ([paper](https://arxiv.org/abs/2507.05257)) | Answering from a long history whose facts are later overwritten, single- and multi-hop, 6K to 262K tokens | Supported |
-| LongMemEval | Long-horizon question answering | Planned |
-| LoCoMo | Long conversational memory | Planned |
-
-## Quick start
-
-The engine candidate and its generated public contract must be present as
-immutable files. Record both SHA-256 digests; the harness refuses an absent or
-mismatched digest before it creates a profile or vault. It also verifies that
-the contract binds the same executable and exposes only `remember` and `search`.
-
-```bash
-shasum -a 256 /path/to/kscope
-shasum -a 256 /path/to/kaleidoscope-public-contract.json
-```
-
-Then:
-
-```bash
-git clone https://github.com/kleos-research/kaleidoscope-benchmarks
-cd kaleidoscope-benchmarks
-pip install -e .
-
-cp .env.example .env      # add your OPENAI_API_KEY
-
-# Fetch the BEAM tier you want into data/ — see benchmarks/beam/README.md
-python -m kbench.benchmarks.beam.run all --tier 100K \
-  --candidate /path/to/kscope \
-  --candidate-sha256 <64-lowercase-hex> \
-  --public-contract /path/to/kaleidoscope-public-contract.json \
-  --public-contract-sha256 <64-lowercase-hex>
-```
-
-Any OpenAI-compatible endpoint works — set `OPENAI_BASE_URL`.
-
-### Native candidate smoke
-
-The ordinary suite uses a fake process so it stays deterministic and free. An
-opt-in smoke test proves the same candidate/contract binding against a real
-native executable, then creates a temporary profile and vault, writes one
-memory, performs ranked and addressed search, and checks the closed launch
-descriptor:
-
-```bash
-export KBENCH_LIVE_CANDIDATE=/absolute/path/to/kscope
-export KBENCH_LIVE_CANDIDATE_SHA256=<64-lowercase-hex>
-export KBENCH_LIVE_PUBLIC_CONTRACT=/absolute/path/to/kaleidoscope-public-contract.json
-export KBENCH_LIVE_PUBLIC_CONTRACT_SHA256=<64-lowercase-hex>
-python -m pytest tests/test_live_candidate_smoke.py -q
-```
-
-The test isolates platform profile directories under its temporary root and
-does not need an LLM key. It records no score and keeps
-`signature_verified: false`; passing it is functional candidate evidence, not
-a signed release or a completed BEAM run.
-
-### Credential-free DX-09 fixture pipeline
-
-For a complete local plumbing check without a model-provider key or BEAM data,
-run the synthetic DX-09 fixture against the frozen local candidate. The run root
-must be a fresh path outside this repository; it contains the isolated native
-profile home, vault, and all generated artifacts.
-
-```bash
-python -m kbench.benchmarks.beam.fixture \
-  --run-root /absolute/ignored/path/dx09-fixture-run \
-  --candidate /absolute/path/to/kscope \
-  --candidate-sha256 988192ac9677d5dd55a3642b2da493a0806bb860b5b3c0f509b37ddadee08825 \
-  --public-contract /absolute/path/to/public-contract.json \
-  --public-contract-sha256 a2357ed6c00e3e143d08581590571447e31d24fd0e7d2466d28a211a0515c75e
-```
-
-This lane performs batch `remember`, addressed read-back, one ranked `search`
-per question, deterministic label-driven answering, boolean local judging, and
-a report. `evidence.json` binds every artifact to the exact candidate, contract,
-and fixture corpus. It intentionally records `signature_verified: false`,
-`release_evidence_claimed: false`, and `production_comparable: false`; it emits
-no performance score. Passing proves the local call chain works, not how the
-system performs on BEAM.
-
-## How it works
-
-Four phases. Each writes its output to disk, and **nothing downstream reruns
-anything upstream**.
-
-```
-ingest  ──►  answer  ──►  judge  ──►  report
-  │            │            │
-  │            │            └─ scores.jsonl   rubric + Kendall tau
-  │            └────────────── answers.jsonl  retrieved context + hypothesis
-  └─────────────────────────── ingest.json    memories written, edges, spend
-```
-
-**1. Ingest** — walk each conversation front to back, extract what each exchange
-establishes, write it through `remember`. The extractor supplies the semantics;
-Kaleidoscope never infers them. See [AGENTS.md](AGENTS.md).
-
-**2. Answer** — for each question, one ranked `search` returns the bounded
-context Kaleidoscope itself assembled, and the reader answers from exactly
-that. The harness does not re-render hits: `search.context_text` carries graph paths,
-contradiction flags and validity windows that re-rendering would discard.
-
-**3. Judge** — one call per rubric item, plus normalised Kendall tau for
-`event_ordering`, which BEAM does not score with a rubric.
-
-**4. Report** — tables.
-
-Run a phase on its own whenever you only want that phase:
-
-```bash
-python -m kbench.benchmarks.beam.run judge --judge-model gpt-4.1-mini
-```
-
-Re-judging costs judge calls only. Extraction is cached by prompt hash, so
-editing the prompt re-pays for what changed and nothing else.
+An AI agent forgets what it learned when its session ends, so the next session
+repeats the same work and the same mistakes. Kaleidoscope keeps that memory as
+files on the user's own disk. This repository measures how well it works: it
+runs Kaleidoscope through published academic benchmarks and compares it with
+simpler options, such as keyword search or pasting the whole history into the
+prompt. Every run calls the real `kscope` binary rather than a reimplementation,
+so the numbers describe what ships, and the losses are reported beside the wins.
 
 ## Results
 
 ### MemoryAgentBench
 
-On FactConsolidation at 262K tokens, with the same reader (GPT-5.6 Luna) in
-every arm:
+[MemoryAgentBench](https://arxiv.org/abs/2507.05257) gives an agent a long
+history of facts, some of them later overwritten, and then asks for the current
+values. Single-hop questions ask about one fact; multi-hop questions chain two
+to four. At the longest history, 262K tokens, with the same answering model
+(GPT-5.6 Luna) in every setup:
 
-| | single-hop accuracy | reader tokens per question |
-| --- | --- | --- |
-| entire history in the prompt | 85 | 291,746 |
-| **Kaleidoscope** | **90** | **1,195** |
-| BM25 keyword search | 78 | 2,066 |
-| no memory | 13 | 189 |
+| setup | single-hop | multi-hop | total tokens | cost |
+| --- | ---: | ---: | ---: | ---: |
+| entire history in the prompt | 85 | **25** | 58.4M | $11.71 |
+| **Kaleidoscope** (writing + reading) | **90** | 10 | 9.3M | $6.34 |
+| BM25 keyword search | 78 | 11 | 0.46M | **$0.14** |
 
-Kaleidoscope is more accurate than pasting in the whole history, at 0.4% of the
-tokens. It loses to BM25 on multi-hop questions at every length. Full results,
-per length, with the losses: [docs/memoryagentbench](docs/memoryagentbench/).
+Scores are out of 100. Tokens and cost cover all 200 questions, 100 of each
+type, at list price: $0.20 per million input tokens and $1.20 per million
+output tokens.
+
+- **Kaleidoscope is the most accurate on single-hop questions.** On multi-hop
+  questions the whole history leads with 25, far ahead of Kaleidoscope (10) and
+  BM25 (11).
+- **Against the whole history, Kaleidoscope uses 6.3 times fewer tokens and
+  costs 46% less.** Most of its cost is writing memory: about 9.1M tokens
+  ($6.25) to store this history, paid once. Each question after that is cheap,
+  so the writing is repaid after about 31 questions in tokens, or about 107 in
+  dollars.
+- **BM25 is far cheaper than both, because it writes nothing.**
+- **Reading alone**, Kaleidoscope sends the answering model 1,195 tokens per
+  single-hop question, against 291,746 for the whole history. That comparison
+  leaves out the writing.
+
+Where the numbers come from: `python -m kbench.benchmarks.memoryagentbench.check <run_id>`
+reports the scores and, in its "Tokens and cost" section, the writing and
+reading tokens for every history length. The whole-history numbers come from
+`python -m kbench.benchmarks.memoryagentbench.score_partial` on that setup's
+log: its score, and its prompt tokens per question, times 100 questions of each
+type, plus the 36,042 tokens of its answers. Dollars are tokens times the list
+price. Every length, the losses, and the full commands:
+[docs/memoryagentbench](docs/memoryagentbench/).
 
 ### BEAM
 
-Measured numbers for 100K and 1M, per question and per ability, with the
-configuration that produced each row: [docs/beam](docs/beam). Read that
-README's first section before quoting anything from it — the comparison against
-published work is not controlled for the reader model.
+[BEAM](https://arxiv.org/abs/2510.27246) tests ten memory abilities, such as
+updating a fact or resolving a contradiction, over conversations of 100K to 10M
+tokens. Results at 100K and 1M, per question and per ability, are in
+[docs/beam](docs/beam/). Read that page's first section before quoting it: it
+compares Kaleidoscope with published mem0 results that used a different
+answering model.
 
-## Two scores, never averaged
+## Quickstart
 
-| | |
-| --- | --- |
-| **evidence recall** | Model-free, from BEAM's own `source_chat_ids`. Retrieval quality alone — no reader, no judge, deterministic, free. |
-| **BEAM score** | The judged rubric mean, comparable to published numbers. |
+You need macOS or Linux, Python 3.10 or newer, and Node.js 18 or newer.
 
-They answer different questions. A retrieval change can move one and not the
-other, and if evidence recall rises while the BEAM score does not, retrieval was
-not the bottleneck. Collapsing them into one column hides exactly that.
+**1. Install Kaleidoscope** and check that its built-in model is present:
 
-Use evidence recall to iterate — it costs nothing and cannot be perturbed by a
-judge defect. Use the BEAM score to compare against published work.
+```bash
+npm install -g @kleos-research/kaleidoscope
+kscope model        # prints JSON that includes "status": "bundled"
+```
 
-## Configuration
+**2. Install this repository:**
 
-| Variable | Default | |
+```bash
+git clone https://github.com/kleos-research/kaleidoscope-benchmarks
+cd kaleidoscope-benchmarks
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev]'
+```
+
+**3. Run the tests.** They use a stand-in for `kscope`, so they are free and
+need no API key:
+
+```bash
+python -m pytest tests/ -q
+```
+
+**4. Run a benchmark.** Both benchmarks call a language model, so a run costs
+money.
+
+- **MemoryAgentBench** runs against the `kscope` you just installed. It needs
+  an Azure OpenAI deployment of GPT-5.6 Luna. The published run, all four
+  history lengths, cost $9.91 at list price, plus $11.71 for the whole-history
+  setup. See [its README](kbench/benchmarks/memoryagentbench/).
+- **BEAM** works with any OpenAI-compatible API, but runs against one exact
+  build of `kscope`. You pin that build by passing the binary and its *public
+  contract*, a JSON file generated for each build, together with the SHA-256
+  of each. The npm package doesn't include the contract yet, so for now you can
+  run BEAM only against a build that came with one. See
+  [its README](kbench/benchmarks/beam/).
+
+A BEAM run, once you have the data and a build with its contract, looks like
+this:
+
+```bash
+cp .env.example .env          # then set OPENAI_API_KEY in .env
+shasum -a 256 /path/to/kscope /path/to/kaleidoscope-public-contract.json
+
+python -m kbench.benchmarks.beam.run all --tier 100K \
+  --candidate /path/to/kscope \
+  --candidate-sha256 <sha256 of kscope> \
+  --public-contract /path/to/kaleidoscope-public-contract.json \
+  --public-contract-sha256 <sha256 of the contract>
+```
+
+The harness refuses to start if either file does not match its SHA-256, so a
+run always measures the build you meant.
+
+## Benchmarks
+
+| benchmark | what it measures | status |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | — | required |
-| `OPENAI_BASE_URL` | OpenAI | any compatible endpoint |
-| `KBENCH_EXTRACTOR_MODEL` | `gpt-4.1` | writes memory |
-| `KBENCH_READER_MODEL` | `gpt-4.1` | answers from retrieved context |
-| `KBENCH_JUDGE_MODEL` | `gpt-4.1` | scores against the rubric |
-| `KBENCH_TOP_K` | `8` | explicit ranked-search depth |
-| `KBENCH_MAXIMUM_CONTEXT_BYTES` | `32768` | explicit context budget |
-| `KBENCH_CONVERSATION_WORKERS` | `4` | conversations in flight |
-| `KBENCH_QUESTION_WORKERS` | `4` | questions per conversation |
-| candidate CLI flags | — | executable/contract paths and exact SHA-256 digests |
+| [BEAM](kbench/benchmarks/beam/) | ten memory abilities over conversations of 100K to 10M tokens | supported |
+| [MemoryAgentBench](kbench/benchmarks/memoryagentbench/) | answering from a long history whose facts are later overwritten, single- and multi-hop, 6K to 262K tokens | supported |
+| LongMemEval | long-horizon question answering | planned |
+| LoCoMo | long conversational memory | planned |
 
-**Keep the reader identical across arms you intend to compare.** A reader
-difference is indistinguishable from a memory difference in the final score, and
-it is the easiest way to publish a number that means nothing.
+Each benchmark lives in two places: the harness and how to run it under
+`kbench/benchmarks/<name>/`, and what it measured under `docs/<name>/`.
 
-**And keep the search contract identical.** `top_k` and
-`maximum_context_bytes` are protocol-defining inputs, not volume dials. The
-harness sends both explicitly and records them beside the candidate and public
-contract digests. Historical depth sweeps remain possible, but their rows are
-comparable only at the same values.
-
-The judge is deliberately not tied to the reader. If it tracked the arm being
-graded, judge quality and arm quality would be confounded.
-
-## Parallelism
-
-Conversations are independent — separate stores, and BEAM's evidence never
-crosses conversations — so they run concurrently, as do the questions within
-them. Total in-flight work is `conversation_workers x question_workers`.
-
-Ingestion is the exception: chunks within a conversation are **ordered**, because
-later facts and contradictions can depend on earlier writes. Writing turn 40
-before turn 12 changes the memory graph.
-
-Each conversation has one deterministic native profile and one vault. Restarting
-between ingest and answer reopens that same profile; public result metadata
-contains only profile-free candidate digests, never root/workspace/principal/
-journal coordinates. Local profile names, vault directories, and extraction
-caches are keyed by both the candidate and contract digests so neither changed
-input can silently reuse earlier acquisition state. Answer and judge sidecars bind
-the exact answer/score bytes across phase restarts; report generation refuses
-stale or cross-candidate phase artifacts.
-
-This branch verifies digest binding but deliberately records
-`signature_verified: false` and `release_evidence_claimed: false`. A signed
-DX-06A candidate is still required before any run is release evidence.
-
-## A note on benchmark scores
-
-Benchmark scores are not absolute numbers. They move with the extractor, the
-reader, the judge, the retrieval depth, and the chunking. A number is only
-meaningful beside the configuration that produced it, which is why every report
-prints that configuration and every row carries the models that produced it.
-
-Two specifics worth knowing before comparing anything:
-
-- **The headline is the mean of the ten ability means**, as BEAM reports it — not
-  the mean over questions. Abstention is one ability of ten, so a system that
-  answers nothing scores 1.000 there and near zero elsewhere.
-- **The write path bounds everything.** If the extractor declines to record an
-  exchange, no retrieval configuration can recover it. The ingest report prints
-  how many exchanges were judged not durable for exactly this reason.
-
-## Project structure
+## Repository layout
 
 ```
 kbench/
-├── config.py                    environment, models, concurrency
-├── llm.py                       one client, one retry policy, one spend ledger
-├── kaleidoscope.py              kscope CLI wrapper, one vault per conversation
-└── benchmarks/beam/
-    ├── dataset.py               loading, and per-conversation scoping
-    ├── extract.py               exchange -> semantic delta
-    ├── ingest.py                phase 1
-    ├── answer.py                phase 2
-    ├── judge.py                 phase 3
-    ├── metrics.py               model-free evidence recall
-    ├── report.py                phase 4
-    ├── run.py                   CLI
-    └── prompts/                 extraction, reader, judge, tau alignment
-└── benchmarks/memoryagentbench/ adapter for MemoryAgentBench's own harness, and an independent checker
-AGENTS.md                        the memory-writing contract
-CLAUDE.md                        how to work in this repository
+├── config.py               settings, read from the environment and .env
+├── llm.py                  the model client and spend tracking
+├── kaleidoscope.py         runs kscope, one memory store per conversation
+└── benchmarks/
+    ├── beam/               the BEAM harness: ingest, answer, judge, report
+    └── memoryagentbench/   an adapter for MemoryAgentBench's own harness, and an independent checker
+docs/
+├── beam/                   BEAM results: every question, and per-setup summaries
+└── memoryagentbench/       MemoryAgentBench results, with a PDF
+tests/                      unit tests; free, no model calls
 ```
+
+## Contributing
+
+Before you open a pull request, run the tests and the linter:
+
+```bash
+python -m pytest tests/ -q
+ruff check kbench/
+```
+
+Every number in a README or a report should come with the command that
+reproduces it. AI agents working in this repository: read
+[CLAUDE.md](CLAUDE.md) and [AGENTS.md](AGENTS.md) first.
 
 ## License
 
-Apache 2.0.
-
-BEAM is published by its own authors under its own terms and is not redistributed
-here — the harness fetches it. See `kbench/benchmarks/beam/README.md`.
-MemoryAgentBench and its data are likewise its authors' own; this repository
-carries only a patch against their code. See
-`kbench/benchmarks/memoryagentbench/README.md`.
+Apache 2.0. BEAM and MemoryAgentBench, code and data, belong to their authors
+and come under their own licences; this repository does not redistribute them.

@@ -45,6 +45,18 @@ result.
 **Report failures as failures.** A partial run presented as complete is worse
 than no run. If a phase is skipped, say which and why.
 
+**Keep the search settings identical across runs you compare.** `top_k` and
+`maximum_context_bytes` define the protocol; they are not volume dials. The
+harness sends both explicitly and records them beside the candidate and
+public-contract digests, and rows are comparable only at the same values.
+
+**Keep every phase bound to its candidate.** Profile names, vault directories
+and extraction caches are keyed by both the candidate and the public-contract
+digests, so a changed input can never reuse earlier acquisition state. Answer
+and judge sidecars bind the exact answer and score bytes across phase restarts,
+and `report` refuses stale or cross-candidate phase artifacts. Do not weaken
+these checks for convenience.
+
 ## Parallelism
 
 Conversations are independent stores and run concurrently. Questions within a
@@ -56,6 +68,16 @@ If you add a nested pool, size the inner one for the *product*. A conversation
 worker submits its questions and then blocks on the results; with an inner pool
 sized for one conversation, the waiters occupy every slot and starve the work
 they are waiting on. That presents as a hang, not an error.
+
+## Writing READMEs and docs
+
+READMEs and `docs/` pages are read by people who have never seen this project,
+and this repository is public. Write them in plain English, and keep
+instructions for agents here or in AGENTS.md rather than in a README. Describe
+what Kaleidoscope does, not how it works: do not name its internal engines or
+models, its retrieval settings or any threshold value. A token or cost
+claim for Kaleidoscope states the cost of writing memory as well as reading it,
+and how many questions the writing is spread over.
 
 ## Before you commit
 

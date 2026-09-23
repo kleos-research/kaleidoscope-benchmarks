@@ -11,6 +11,7 @@ import pytest
 from kbench.benchmarks.beam import fixture
 from kbench.config import REPO_ROOT
 from kbench.kaleidoscope import KaleidoscopeError, sha256_bytes, sha256_file
+from kscope_call import RECEIPT_OPERATIONS, TEXT_RECEIPT, profile_call
 
 
 @dataclass
@@ -42,10 +43,13 @@ class FixtureEngine:
             self.profiles[profile] = {"name": profile, "root": root}
             self.memories[profile] = []
             return 0, json.dumps({"status": "initialized"}), ""
-        if args[:2] != ["call", "--profile"]:
+        call = profile_call(args)
+        if call is None:
             return 1, "", "unsupported"
 
-        profile, operation = args[2], args[3]
+        profile, operation, wants_json = call
+        if operation in RECEIPT_OPERATIONS and not wants_json:
+            return 0, TEXT_RECEIPT, ""
         if operation == "ontology":
             return (
                 0,

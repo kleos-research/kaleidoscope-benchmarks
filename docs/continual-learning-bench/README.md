@@ -45,8 +45,10 @@ trails on database questions; poker is a tie within noise.**
 
 ## Results
 
-The benchmark's normalized reward, per task. 0 is the benchmark's reference
-no-memory result, and positive means better than it:
+**Score** (the benchmark's normalized reward, which its leaderboard ranks by)
+measures how far each setup's learning runs got toward the best possible
+result. It starts from one fixed line for everyone: the benchmark's published
+GPT-5.4 run with no memory. 0 means no better than that line.
 
 | task | Kaleidoscope + GPT-5.6 Luna | ICL + GPT-5.6 Luna |
 | --- | ---: | ---: |
@@ -58,8 +60,13 @@ no-memory result, and positive means better than it:
 | sales forecasting | **66.2** | 61.4 |
 | **average** | **27.6** | 25.6 |
 
-Gain over each setup's own no-memory pass, the benchmark's other headline
-measure:
+**Gain** (the benchmark's normalized gain) measures the same progress from each
+setup's *own* no-memory run: the same model, with memory wiped before every
+case. It shows how much the learning itself added. The two measures differ
+wherever a model with no memory starts ahead of or behind GPT-5.4. Luna
+already fixes bugs better than GPT-5.4 without memory, so Kaleidoscope's
+bug-fixing score is 52.1 and its gain 21.9. In radio the two starting lines
+coincide, so both are 14.0.
 
 | task | Kaleidoscope + GPT-5.6 Luna | ICL + GPT-5.6 Luna |
 | --- | ---: | ---: |

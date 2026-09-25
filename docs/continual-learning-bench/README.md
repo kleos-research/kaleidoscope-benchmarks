@@ -85,9 +85,8 @@ The benchmark calls a *system* before every answer and after every piece of
 feedback. Ours is a small plug-in around the real `kscope` binary, pinned by its
 hash. Per turn:
 
-1. **Before answering:** Kaleidoscope searches its memory for the 10 memories
-   most relevant to the current problem and puts them at the top of the
-   model's prompt.
+1. **Before answering:** Kaleidoscope searches its memory for what is relevant
+   to the current problem and puts it at the top of the model's prompt.
 2. **While answering:** the model can call Kaleidoscope's two tools, `search`
    and `remember`, with the descriptions and instructions exactly as the
    product ships them. It must then submit its answer.
@@ -109,8 +108,8 @@ plus a few words of tool plumbing. None of it mentions any task.
 - ICL keeps every earlier query and its result in the prompt, so after the
   first question it knows the schema. It opens only 8 of 200 questions by
   looking the schema up again.
-- Kaleidoscope does remember the schema, but a search returns it as up to ten
-  short notes rather than the whole map. The model double-checks by querying
+- Kaleidoscope does remember the schema, but a search returns it as a handful
+  of short notes rather than the whole map. The model double-checks by querying
   the schema, which it does on 158 of 200 questions.
 - Every exploratory query costs reward. Kaleidoscope answers 131 of 200
   questions correctly against ICL's 152, and spends about twice as many

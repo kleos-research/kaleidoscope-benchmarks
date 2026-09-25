@@ -42,9 +42,6 @@ trails on database and poker.**
     three of the nineteen bug-fixing repositories
     ([issue #4](https://github.com/pgasawa/continual-learning-bench/issues/4)).
     Our runs used the rebuilt image.
-- **One database question was completed afterwards,** on a patched plug-in.
-  "What we fixed on the way" below explains why. It affects only the
-  no-memory pass, which the score does not use.
 
 ## Results
 
@@ -124,47 +121,14 @@ plus a few words of tool plumbing. None of it mentions any task.
 
 **Poker.** An analysis of why is in progress.
 
-## Cost
+## Notes
 
-Both setups ran the full default schedule at list price: $0.20 per million
-input tokens and $1.20 per million output tokens.
-
-| setup, both on GPT-5.6 Luna | whole six-task run |
-| --- | ---: |
-| ICL | $12.47 |
-| Kaleidoscope | about $41 |
-
-Kaleidoscope costs more because its note-taker reads the current case after
-every turn.
-
-## What we fixed on the way, and what we disclose
-
-- **A slow tokenizer on giant text.** In the database task, a query can return
-  a table millions of characters wide. The benchmark pads every cell to the
-  widest one and draws a separator of that width. Our note-taker counted tokens
-  on that text with a tokenizer that slows down with the square of the length
-  of one long run of characters, so one no-memory question stalled for hours.
-  We changed only how the note-taker counts tokens on such text: version 2.0.1.
-  - On every other text it runs exactly the same code. We checked that the
-    other five tasks never contained such text.
-  - We then re-ran the one missing no-memory question on 2.0.1.
-  - The five scored database rollouts are unchanged.
-- **Every database attempt, disclosed.** The scored part of every attempt
-  completed:
-  - a first development run: 46.2
-  - the run reported here: 41.2
-  - a later whole-task re-run on 2.0.1: 38.4. It stopped because one query
-    result, 31 million characters, exceeded Azure's 10,485,760-character limit
-    on a single message.
-
-  The benchmark caps results at 50 rows but not at any size. Its published
-  models never produced a result over 2.1 million characters.
-- **Validity checks on every task:**
-  - zero memory-system failures
-  - memory served in every rollout
-  - the note-taker saved memories in every rollout
-  - the pinned binary, model and library versions
-  - every model call logged and priced
+- **One no-memory database question was re-run.** It stalled in the original
+  run on a token-counting bug in our plug-in. We fixed the counting (plug-in
+  2.0.1, which is identical to 2.0 on all other text) and re-ran that one
+  question. The score does not use the no-memory pass.
+- **Two other database runs** of the same plug-in scored 46.2 and 38.4. The
+  41.2 reported here comes from the same run as the other five tasks.
 
 ## Reproducing
 

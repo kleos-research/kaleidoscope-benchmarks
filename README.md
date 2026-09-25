@@ -76,7 +76,7 @@ is a different model, so the comparison is not controlled.
 - **It trails on database questions.** Its model keeps re-checking a
   database's layout instead of trusting what memory recalls, and every extra
   query costs reward.
-- **It also trails on poker.**
+- **Poker is a tie within noise.** Three all-in hands decide the gap.
 - **One run per setup:** the average difference is within noise.
 
 Per-task gains, costs, the method and every disclosure are in

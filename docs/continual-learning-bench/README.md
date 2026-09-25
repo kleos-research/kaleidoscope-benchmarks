@@ -119,7 +119,19 @@ plus a few words of tool plumbing. None of it mentions any task.
   rollout, after the midway schema change, Kaleidoscope got 38 of 50 right
   against ICL's 39.
 
-**Poker.** An analysis of why is in progress.
+**Poker: mostly luck.**
+- Three all-in hands against one opponent account for the whole gap. In the
+  costliest, Kaleidoscope went all-in with pocket jacks as an 80% favourite and
+  lost to a king on the turn.
+- On the other 116 hands, both setups win about the same: +0.62 big blinds per
+  hand for Kaleidoscope, +0.70 for ICL.
+- The overall poker difference is within noise: −4.9 points, 95% interval
+  −15.1 to +5.3.
+
+The same analysis found something for us to improve. Kaleidoscope's note-taker
+mostly kept a diary of individual hands rather than lessons about each
+opponent. ICL did learn to bet bigger against the one opponent who calls
+everything.
 
 ## Notes
 

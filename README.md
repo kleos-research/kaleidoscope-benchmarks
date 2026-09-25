@@ -79,7 +79,7 @@ is a different model, so the comparison is not controlled.
 - **Poker is a tie within noise.** Three all-in hands decide the gap.
 - **One run per setup:** the average difference is within noise.
 
-Per-task gains, costs, the method and every disclosure are in
+Per-task gains, how Kaleidoscope was used, and where it loses are in
 [docs/continual-learning-bench](docs/continual-learning-bench/).
 
 ### BEAM

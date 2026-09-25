@@ -66,10 +66,10 @@ measure:
 | radio mapping | **14.0** | 9.0 |
 | bug fixing | **21.9** | −5.9 |
 | medical cohorts | **10.2** | 6.2 |
-| database questions | *pending* | **59.6** |
+| database questions | 39.3 | **59.6** |
 | poker | −4.8 | **0.2** |
 | sales forecasting | **62.6** | 57.7 |
-| **average** | *pending* | 21.1 |
+| **average** | **23.9** | 21.1 |
 
 - **Bug fixing: 21 points ahead.** Carrying lessons forward between
   repositories beats rereading every earlier session. ICL's own gain on bug

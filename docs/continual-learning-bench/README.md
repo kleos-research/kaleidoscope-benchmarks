@@ -35,7 +35,9 @@ trails on database and poker.**
     detect a difference this size.
 - **Not controlled against the published leaderboard.** Its entries use other
   models: GPT-5.4, Claude Opus 4.7 and Sonnet 4.6, Gemini 3. So this page
-  compares only the two setups on Luna.
+  compares only the two setups on Luna. For reference only, the best published
+  entry (in-context learning with Claude Sonnet 4.6, leaderboard last updated
+  18 July 2026) averages 19.6.
   - Separately, 8 of the 12 published entries ran a broken Docker image for
     three of the nineteen bug-fixing repositories
     ([issue #4](https://github.com/pgasawa/continual-learning-bench/issues/4)).
@@ -49,7 +51,7 @@ trails on database and poker.**
 The benchmark's normalized reward, per task. 0 is the benchmark's reference
 no-memory result, and positive means better than it:
 
-| task | Kaleidoscope | ICL |
+| task | Kaleidoscope + GPT-5.6 Luna | ICL + GPT-5.6 Luna |
 | --- | ---: | ---: |
 | radio mapping | **14.0** | 9.0 |
 | bug fixing | **52.1** | 31.0 |
@@ -62,7 +64,7 @@ no-memory result, and positive means better than it:
 Gain over each setup's own no-memory pass, the benchmark's other headline
 measure:
 
-| task | Kaleidoscope | ICL |
+| task | Kaleidoscope + GPT-5.6 Luna | ICL + GPT-5.6 Luna |
 | --- | ---: | ---: |
 | radio mapping | **14.0** | 9.0 |
 | bug fixing | **21.9** | −5.9 |
@@ -127,7 +129,7 @@ plus a few words of tool plumbing. None of it mentions any task.
 Both setups ran the full default schedule at list price: $0.20 per million
 input tokens and $1.20 per million output tokens.
 
-| | whole six-task run |
+| setup, both on GPT-5.6 Luna | whole six-task run |
 | --- | ---: |
 | ICL | $12.47 |
 | Kaleidoscope | about $41 |

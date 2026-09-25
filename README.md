@@ -58,12 +58,18 @@ price. Every length, the losses, and the full commands:
 [Continual Learning Bench](https://arxiv.org/abs/2606.05661) runs an agent
 through six tasks where it should improve with experience: radio mapping, bug
 fixing, medical cohort studies, database questions, poker and sales
-forecasting. With the same answering model (GPT-5.6 Luna) in both setups:
+forecasting. Both setups below use the same model, **GPT-5.6 Luna** at
+reasoning effort `high`:
 
-| setup | radio | bug fixing | medical | database | poker | sales | average |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **Kaleidoscope** | **14.0** | **52.1** | **−1.7** | 41.2 | −6.5 | **66.2** | **27.6** |
-| in-context learning (whole history in the prompt) | 9.0 | 31.0 | −8.1 | **61.9** | **−1.6** | 61.4 | 25.6 |
+| setup | model | radio | bug fixing | medical | database | poker | sales | average |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Kaleidoscope** | GPT-5.6 Luna | **14.0** | **52.1** | **−1.7** | 41.2 | −6.5 | **66.2** | **27.6** |
+| in-context learning (whole history in the prompt) | GPT-5.6 Luna | 9.0 | 31.0 | −8.1 | **61.9** | **−1.6** | 61.4 | 25.6 |
+
+For reference, the best entry on the benchmark's
+[public leaderboard](https://continual-learning-bench.com) (last updated 18
+July 2026) is in-context learning with Claude Sonnet 4.6, averaging 19.6. That
+is a different model, so the comparison is not controlled.
 
 - **Kaleidoscope leads on four of six tasks, most on bug fixing**, by 21
   points.

@@ -112,25 +112,23 @@ plus a few words of tool plumbing. None of it mentions any task.
 ## Where Kaleidoscope loses
 
 **Database questions.**
-- ICL keeps every earlier query and its result in the prompt, so after the
-  first question it knows the schema. It opens only 8 of 200 questions by
-  looking the schema up again.
+- ICL keeps every earlier query and its result in the prompt, so once it has
+  explored the schema, it can go straight to the answer.
 - Kaleidoscope does remember the schema, but a search returns it as a handful
-  of short notes rather than the whole map. The model double-checks by querying
-  the schema, which it does on 158 of 200 questions.
-- Every exploratory query costs reward. Kaleidoscope answers 131 of 200
-  questions correctly against ICL's 152, and spends about twice as many
-  queries on each correct answer: 3.7 against 1.7.
+  of short notes rather than the whole map. So the model tends to look the
+  schema up again before answering.
+- Every exploratory query costs reward. Kaleidoscope solves 131 of 200
+  questions against ICL's 152, and spends about twice as many queries on each
+  solved question: 3.7 against 1.7.
 - The gap closes as memory builds up. On the last ten questions of each
-  rollout, after the midway schema change, Kaleidoscope got 38 of 50 right
-  against ICL's 39.
+  rollout, after the midway schema change, Kaleidoscope solved 38 of 50 against
+  ICL's 39.
 
 **Poker: mostly luck.**
-- Three all-in hands against one opponent account for the whole gap. In the
-  costliest, Kaleidoscope went all-in with pocket jacks as an 80% favourite and
-  lost to a king on the turn.
-- On the other 116 hands, both setups win about the same: +0.62 big blinds per
-  hand for Kaleidoscope, +0.70 for ICL.
+- A few hands decide the gap. Over five rollouts, ICL's lead is 247 big
+  blinds, and 230 of them come from just three hands.
+- On the other 117 hands, both setups win about the same: +0.62 big blinds per
+  hand for Kaleidoscope and +0.65 for ICL.
 - The overall poker difference is within noise: −4.9 points, 95% interval
   −15.1 to +5.3.
 
@@ -150,6 +148,27 @@ everything.
 
 ## Reproducing
 
-The plug-in, the launcher that starts every run and the validity checker are
-published with our leaderboard submission. The per-task artifacts are in the
-benchmark's own format.
+Both runs are public in the benchmark's own format, with the plug-in and the
+start-up hook that set reasoning effort, in
+[pull request #23](https://github.com/pgasawa/continual-learning-bench/pull/23)
+to the benchmark. To check every number on this page:
+
+```bash
+git clone -b kaleidoscope-gpt-5.6-luna-results https://github.com/parthpahwa1/continual-learning-bench
+cd continual-learning-bench && uv sync
+
+# The benchmark's own scorer: both setups' average scores
+uv run python scripts/analyze_final_results.py \
+  --run kaleidoscope-gpt-5.6-luna --run icl-gpt-5.6-luna --run icl-gpt-5.4
+
+# Everything else on this page
+uv run python /path/to/kaleidoscope-benchmarks/docs/continual-learning-bench/analyze.py --bench . all
+```
+
+| number | command |
+| --- | --- |
+| every score and gain, per task and averaged | `analyze.py scores` |
+| ICL's bug-fixing rollouts, −24 and +70 | `analyze.py scores` |
+| 131 against 152 solved, 3.7 against 1.7 queries, 38 against 39 at the end | `analyze.py database` |
+| poker: 247 and 230 big blinds, +0.62 and +0.65 per hand, −4.9 and its interval | `analyze.py poker` |
+| the two other database runs, 46.2 and 38.4, from [other-database-runs.json](other-database-runs.json) | `analyze.py other-database-runs` |

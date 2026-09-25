@@ -15,7 +15,7 @@ it goes:
 We ran Kaleidoscope with GPT-5.6 Luna, and compared it with the benchmark's own
 in-context learning (ICL) setup on the same model. **Averaged over the six
 tasks, Kaleidoscope scores 27.6 against ICL's 25.6. It leads on four tasks and
-trails on database and poker.**
+trails on database questions; poker is a tie within noise.**
 
 ## Read this before the numbers
 
@@ -77,7 +77,7 @@ measure:
   than starting fresh.
 - **Radio, medical and sales: modest leads**, each within one run's noise.
 - **Database: ICL leads by 21 points.** See "Where Kaleidoscope loses".
-- **Poker: Kaleidoscope trails by 5 points.**
+- **Poker: a tie within noise.** See "Where Kaleidoscope loses".
 
 ## How Kaleidoscope was used
 

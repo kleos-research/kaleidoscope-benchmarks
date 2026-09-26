@@ -53,6 +53,35 @@ type, plus the 36,042 tokens of its answers. Dollars are tokens times the list
 price. Every length, the losses, and the full commands:
 [docs/memoryagentbench](docs/memoryagentbench/).
 
+### Continual Learning Bench
+
+[Continual Learning Bench](https://arxiv.org/abs/2606.05661) runs an agent
+through six tasks where it should improve with experience: radio mapping, bug
+fixing, medical cohort studies, database questions, poker and sales
+forecasting. Both setups below use the same model, **GPT-5.6 Luna** at
+reasoning effort `high`:
+
+| setup | model | radio | bug fixing | medical | database | poker | sales | average |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Kaleidoscope** | GPT-5.6 Luna | **14.0** | **52.1** | **−1.7** | 41.2 | −6.5 | **66.2** | **27.6** |
+| in-context learning (whole history in the prompt) | GPT-5.6 Luna | 9.0 | 31.0 | −8.1 | **61.9** | **−1.6** | 61.4 | 25.6 |
+
+For reference, the best entry on the benchmark's
+[public leaderboard](https://continual-learning-bench.com) (last updated 18
+July 2026) is in-context learning with Claude Sonnet 4.6, averaging 19.6. That
+is a different model, so the comparison is not controlled.
+
+- **Kaleidoscope leads on four of six tasks, most on bug fixing**, by 21
+  points.
+- **It trails on database questions.** Its model keeps re-checking a
+  database's layout instead of trusting what memory recalls, and every extra
+  query costs reward.
+- **Poker is a tie within noise.** A few hands decide the gap.
+- **One run per setup:** the average difference is within noise.
+
+Per-task gains, how Kaleidoscope was used, and where it loses are in
+[docs/continual-learning-bench](docs/continual-learning-bench/).
+
 ### BEAM
 
 [BEAM](https://arxiv.org/abs/2510.27246) tests ten memory abilities, such as
@@ -126,6 +155,7 @@ run always measures the build you meant.
 | --- | --- | --- |
 | [BEAM](kbench/benchmarks/beam/) | ten memory abilities over conversations of 100K to 10M tokens | supported |
 | [MemoryAgentBench](kbench/benchmarks/memoryagentbench/) | answering from a long history whose facts are later overwritten, single- and multi-hop, 6K to 262K tokens | supported |
+| [Continual Learning Bench](docs/continual-learning-bench/) | getting better over a sequence of related tasks, across six domains | results published; it runs as a plug-in inside the benchmark's own repository |
 | LongMemEval | long-horizon question answering | planned |
 | LoCoMo | long conversational memory | planned |
 

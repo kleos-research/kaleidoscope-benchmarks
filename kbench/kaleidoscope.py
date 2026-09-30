@@ -7,7 +7,7 @@ vault work when either digest is absent or disagrees.
 
 Conversation isolation is expressed with native version-1 profiles. The
 benchmark never persists or reports root/workspace/principal/journal tuples;
-after ``init-profile`` every operation is ``call --profile NAME``.
+after ``init-profile`` every operation is ``call --profile NAME OPERATION --json``.
 """
 
 from __future__ import annotations
@@ -213,7 +213,11 @@ class Vault:
         self._vocabulary_lock = threading.Lock()
 
     def call(self, operation: str, payload: dict) -> dict:
-        return self.candidate.invoke(["call", "--profile", self.profile, operation], payload)
+        # Since kscope 0.0.6 `call search` and `call remember` print a text
+        # receipt unless `--json` asks for the response object parsed here.
+        return self.candidate.invoke(
+            ["call", "--profile", self.profile, operation, "--json"], payload
+        )
 
     def ranked_search(
         self,

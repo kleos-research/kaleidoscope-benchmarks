@@ -20,6 +20,7 @@ from kbench.kaleidoscope import (
     sha256_file,
 )
 from kbench.llm import Completion, Spend, Usage
+from kscope_call import RECEIPT_OPERATIONS, TEXT_RECEIPT, profile_call
 
 
 @dataclass
@@ -57,12 +58,15 @@ class FakeEngine:
             }
             self.memories[profile] = []
             return 0, json.dumps({"status": "initialized", "version": 1}), ""
-        if args[:2] != ["call", "--profile"] or len(args) != 4:
+        call = profile_call(args)
+        if call is None:
             return 1, "", "unsupported fake command"
 
-        profile, operation = args[2], args[3]
+        profile, operation, wants_json = call
         if profile not in self.profiles:
             return 1, "", "missing profile"
+        if operation in RECEIPT_OPERATIONS and not wants_json:
+            return 0, TEXT_RECEIPT, ""
         if operation == "ontology":
             return (
                 0,
@@ -304,7 +308,7 @@ def test_one_profile_per_conversation_and_restart_persistence(tmp_path: Path):
 
     profile_calls = [args for args, _ in engine.calls if args[:2] == ["call", "--profile"]]
     assert profile_calls
-    assert all(len(args) == 4 for args in profile_calls)
+    assert all(args[4:] == ["--json"] for args in profile_calls)
 
 
 def test_ranked_acquisition_searches_once_and_public_metadata_has_no_coordinates(
@@ -389,12 +393,12 @@ def test_ranked_acquisition_searches_once_and_public_metadata_has_no_coordinates
     ranked = [
         payload
         for args, payload in engine.calls
-        if args[-1:] == ["search"] and payload and "query" in payload
+        if args[3:4] == ["search"] and payload and "query" in payload
     ]
     addressed = [
         payload
         for args, payload in engine.calls
-        if args[-1:] == ["search"] and payload and "memory_id" in payload
+        if args[3:4] == ["search"] and payload and "memory_id" in payload
     ]
     assert ranked == [
         {
@@ -430,7 +434,7 @@ def test_declarable_vocabulary_is_operator_read_and_cached(tmp_path: Path):
     ).for_conversation("9")
     assert vault.memory_types() == ("runtime_decision", "runtime_note")
     assert vault.memory_types() == ("runtime_decision", "runtime_note")
-    ontology_calls = [args for args, _ in engine.calls if args[-1:] == ["ontology"]]
+    ontology_calls = [args for args, _ in engine.calls if args[3:4] == ["ontology"]]
     assert len(ontology_calls) == 1
     assert ontology_calls[0][:3] == ["call", "--profile", vault.profile]
 
@@ -501,7 +505,7 @@ def test_ingest_uses_runtime_vocabulary_and_current_remember_shape(
         batch_items=20,
     )
     assert report.written == 1
-    remember_payloads = [payload for args, payload in engine.calls if args[-1:] == ["remember"]]
+    remember_payloads = [payload for args, payload in engine.calls if args[3:4] == ["remember"]]
     assert len(remember_payloads) == 1
     payload = remember_payloads[0]
     assert payload["mode"] == "create"

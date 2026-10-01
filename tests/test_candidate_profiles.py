@@ -123,16 +123,28 @@ class FakeEngine:
         return 1, "", "unsupported fake operation"
 
 
-def candidate_fixture(tmp_path: Path, engine: FakeEngine) -> ReleaseCandidate:
+#: One fixture per public-contract version the harness accepts, with the write
+#: batch bound that version publishes: 20 in the v1 releases, 50 in v2.
+CONTRACT_FIXTURES = {
+    "kaleidoscope.public-contract.v1": 20,
+    "kaleidoscope.public-contract.v2": 50,
+}
+
+
+def candidate_fixture(
+    tmp_path: Path,
+    engine: FakeEngine,
+    schema_version: str | None = "kaleidoscope.public-contract.v1",
+) -> ReleaseCandidate:
     executable = tmp_path / "kscope"
     executable.write_bytes(b"deterministic fake engine candidate\n")
     executable_sha = sha256_file(executable)
     contract = {
-        "schema_version": "kaleidoscope.public-contract.v1",
+        "schema_version": schema_version,
         "product": {"version": "1.2.3"},
         "target": {"triple": "fake-test-platform"},
         "executable": {"sha256": executable_sha},
-        "limits": {"remember_batch_items": 20},
+        "limits": {"remember_batch_items": CONTRACT_FIXTURES.get(schema_version, 20)},
         "retired_operations": {"agent_tools": [], "non_product": []},
         "mcp": {"tools": [{"name": "remember"}, {"name": "search"}]},
     }
@@ -198,6 +210,42 @@ def test_candidate_and_contract_digests_are_mandatory_and_exact(tmp_path: Path):
     candidate.executable.write_bytes(b"changed after verification\n")
     with pytest.raises(KaleidoscopeError, match="changed after verification"):
         candidate.require_bundled_model()
+
+
+@pytest.mark.parametrize(("schema_version", "batch_items"), sorted(CONTRACT_FIXTURES.items()))
+def test_each_accepted_contract_version_loads_and_sizes_ingest_batches_from_its_own_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema_version: str, batch_items: int
+):
+    candidate = candidate_fixture(tmp_path, FakeEngine(), schema_version)
+    assert candidate.evidence["schema_version"] == schema_version
+
+    sized: list[int] = []
+
+    def record_batch_size(conversation, *, batch_items, **_kwargs):
+        sized.append(batch_items)
+        return ingest.IngestReport(conversation_id=conversation.conversation_id)
+
+    monkeypatch.setattr(ingest, "ingest_conversation", record_batch_size)
+    ingest.run(
+        [Conversation(conversation_id="1", sessions=[], questions=[])],
+        vault_root=tmp_path / "private-vaults",
+        cache_root=tmp_path / "cache",
+        candidate=candidate,
+        profile_prefix="beam-test",
+        workers=1,
+    )
+    assert sized == [batch_items]
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    ["kaleidoscope.public-contract.v3", "kaleidoscope.public-seed.v1", None],
+)
+def test_a_contract_version_the_harness_does_not_read_is_refused(
+    tmp_path: Path, schema_version: str | None
+):
+    with pytest.raises(KaleidoscopeError, match="unsupported public-contract schema"):
+        candidate_fixture(tmp_path, FakeEngine(), schema_version)
 
 
 def test_candidate_process_receives_only_closed_non_secret_environment(
@@ -502,7 +550,7 @@ def test_ingest_uses_runtime_vocabulary_and_current_remember_shape(
         vaults=pools,
         cache=extract.ExtractionCache(tmp_path / "cache"),
         spend=Spend(),
-        batch_items=20,
+        batch_items=candidate.public_contract["limits"]["remember_batch_items"],
     )
     assert report.written == 1
     remember_payloads = [payload for args, payload in engine.calls if args[3:4] == ["remember"]]

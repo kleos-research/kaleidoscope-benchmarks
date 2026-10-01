@@ -98,16 +98,26 @@ class FixtureEngine:
         return 1, "", "unsupported"
 
 
-def _candidate_files(root: Path) -> tuple[Path, str, Path, str]:
+#: The public-contract versions the harness accepts, each with the write batch
+#: bound it publishes: 20 in the v1 releases, 50 in v2.
+CONTRACT_FIXTURES = {
+    "kaleidoscope.public-contract.v1": 20,
+    "kaleidoscope.public-contract.v2": 50,
+}
+
+
+def _candidate_files(
+    root: Path, schema_version: str = "kaleidoscope.public-contract.v1"
+) -> tuple[Path, str, Path, str]:
     executable = root / "candidate"
     executable.write_bytes(b"fixture candidate\n")
     executable_sha256 = sha256_file(executable)
     contract = {
-        "schema_version": "kaleidoscope.public-contract.v1",
+        "schema_version": schema_version,
         "product": {"version": "fixture"},
         "target": {"triple": "fixture-platform"},
         "executable": {"sha256": executable_sha256},
-        "limits": {"remember_batch_items": 20},
+        "limits": {"remember_batch_items": CONTRACT_FIXTURES[schema_version]},
         "mcp": {"tools": [{"name": "remember"}, {"name": "search"}]},
     }
     contract_path = root / "public-contract.json"
@@ -116,11 +126,15 @@ def _candidate_files(root: Path) -> tuple[Path, str, Path, str]:
     return executable, executable_sha256, contract_path, sha256_bytes(contract_bytes)
 
 
+@pytest.mark.parametrize("schema_version", sorted(CONTRACT_FIXTURES))
 def test_fixture_pipeline_drives_every_phase_without_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    schema_version: str,
 ) -> None:
-    executable, executable_sha256, contract, contract_sha256 = _candidate_files(tmp_path)
+    executable, executable_sha256, contract, contract_sha256 = _candidate_files(
+        tmp_path, schema_version
+    )
     engine = FixtureEngine()
     monkeypatch.setattr(fixture, "EXPECTED_CANDIDATE_SHA256", executable_sha256)
     monkeypatch.setattr(fixture, "EXPECTED_PUBLIC_CONTRACT_SHA256", contract_sha256)
@@ -139,6 +153,7 @@ def test_fixture_pipeline_drives_every_phase_without_credentials(
     assert evidence["status"] == "passed"
     assert evidence["mode"] == "local_synthetic_credential_free"
     assert evidence["candidate"]["signature_verified"] is False
+    assert evidence["candidate"]["schema_version"] == schema_version
     assert evidence["release_evidence_claimed"] is False
     assert evidence["performance_claimed"] is False
     assert evidence["production_comparable"] is False

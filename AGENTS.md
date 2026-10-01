@@ -33,41 +33,47 @@ silently mapped to a hand-picked fallback.
 
 The contract is **per memory**, not per exchange. An exchange that settles two
 unrelated things should produce two memories, each complete in itself — its own
-title, its own content, its own facts. `remember.items` carries up to 20 of them
-in one call.
+title, its own content, its own facts. Several memories go in one `remember`
+call, up to the limit in "Ordering and batching".
 
-This is not a style preference, and the reason is a property of the retriever:
-**facts are not independently retrievable.** The lexical document is built from
-title and content only, so one memory carrying five facts offers the search
-**one** handle, not five. Bundle two unrelated claims and a question about the
-second has to win on a title written about the first.
+**The BEAM extractor does not do this yet.** `prompts/extraction.md` still asks
+for one object per exchange, and `extract.py` and `ingest.py` write one memory
+per exchange. This section is the contract they are moving to. Until they move,
+it describes the target, not what the benchmark writes.
+
+This is not a style preference, and the reason is a property of the retriever.
+A fact can be found by search on its own, by the names and the relation it
+states, but a match only ever brings back the memory the fact belongs to, and
+that memory takes one place in the results. Its title and its text are about
+whatever the memory is about. Bundle two unrelated claims, and a question about
+the second gets back a memory titled and written about the first, with both
+claims sharing one place in the results.
 
 > **User:** Sprint one now ends March 29th, not the 22nd. And put Priya on auth.
 >
 > Two memories — *"Sprint one end date"* and *"Auth work ownership"* — not one
 > memory about both.
 
-Measured on BEAM 100K, over the same 2,866 exchanges: an extractor asked for one
-memory each produced 3.45 facts per exchange across 1.0 memories; the same
-extractor allowed several produced 3.35 facts across 1.8 memories. **The same
-information, spread over 1.8× the retrievable units.** For reference, mem0's
-hosted extractor stores 4.59 memories per exchange on this corpus.
+A small probe on BEAM 100K put the two contracts side by side on the same
+exchanges. Asked for several memories, the extractor wrote about as many facts
+per exchange as when asked for one, spread over nearly twice as many memories;
+on a larger sample, the several-memory prompt also drew out more facts. A probe
+is not a score: whether more memories per exchange raise the benchmark score has
+not been measured.
 
 What does **not** change is the window. One extraction still reads **one
-exchange** — `CHUNK_SIZE = 2`, mem0's own granularity and LIGHT's `pair_chunk`.
-Widening it is a different change and a bad one: an earlier version of this
-harness packed ~10 messages per call and the extractor merged, dropped and
-generalised, which was then misread as a property of the memory system rather
-than of the packing. Output arity is the knob. Input size is not.
+exchange**: two messages, the default of `--chunk-size`, the same granularity as
+mem0's own BEAM runner and LIGHT's `pair_chunk`. Widening it is a different
+change and a bad one: an earlier research harness packed about ten messages per
+call, and the extractor merged, dropped and generalised, which was then misread
+as a property of the memory system rather than of the packing. Output arity is
+the knob. Input size is not.
 
-Whether the extra handles translate into a higher *score* is being measured; that
-they cost nothing extra in calls, and that facts alone cannot be matched, is
-already settled.
+More memories cost no extra extraction calls: there is still one per exchange.
+They do add `remember` items, and each call carries a bounded batch, so
+`remember` calls grow with the number of memories.
 
 ## Current write shape
-
-One object per memory. An exchange returns a list of them, and an exchange that
-establishes nothing returns an empty list.
 
 ```json
 {
@@ -100,7 +106,8 @@ establishes nothing returns an empty list.
 Every fact endpoint must be declared in `entities` with exact `n`, a `kind`,
 and a required identifying `is` gloss. A date is never an entity. Predicates
 are lowercase bounded identifiers. Anything a question may key on belongs in
-the title or Markdown too; facts are not independently lexical documents.
+the title or Markdown too: a fact is matched only by the names and relation it
+states, while the title and Markdown are what the memory itself is matched by.
 
 The model is not asked for numeric confidence. This harness supplies a constant
 for facts it accepts. If the exchange does not support a fact, do not write it.

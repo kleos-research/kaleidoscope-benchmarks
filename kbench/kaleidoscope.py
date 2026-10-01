@@ -26,6 +26,15 @@ CALL_TIMEOUT_SECONDS = 600
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PUBLIC_TOOLS = ("remember", "search")
+# The public-contract versions this harness reads. v2 renamed the version and
+# corrected lists the harness does not read (operator-only commands, retired
+# tools, error codes, the model name); every field read below is the same in
+# both. The write batch size is never assumed: it is the contract's own
+# limits.remember_batch_items, whichever version carries it.
+PUBLIC_CONTRACT_SCHEMAS = (
+    "kaleidoscope.public-contract.v1",
+    "kaleidoscope.public-contract.v2",
+)
 SAFE_ENVIRONMENT_KEYS = (
     "APPDATA",
     "HOME",
@@ -140,7 +149,7 @@ class ReleaseCandidate:
             raise KaleidoscopeError("public-contract digest mismatch")
         contract = _json_object(contract_bytes.decode("utf-8"), "public contract")
 
-        if contract.get("schema_version") != "kaleidoscope.public-contract.v1":
+        if contract.get("schema_version") not in PUBLIC_CONTRACT_SCHEMAS:
             raise KaleidoscopeError("unsupported public-contract schema")
         if (contract.get("executable") or {}).get("sha256") != expected_executable:
             raise KaleidoscopeError("public contract is bound to a different candidate")
